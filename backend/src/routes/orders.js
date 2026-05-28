@@ -48,6 +48,34 @@ async function getTierPrice(productId, quantity) {
   return productRows[0]?.price || 0;
 }
 
+// Get the best matching tier and its details for a quantity
+// Returns { price, minQuantity, isBase } to track which tier was applied
+async function getTierPriceWithInfo(productId, quantity) {
+  const { rows: tiers } = await db.query(
+    `SELECT min_quantity, price_per_unit FROM price_tiers WHERE product_id = $1 ORDER BY min_quantity DESC`,
+    [productId]
+  );
+  
+  for (const tier of tiers) {
+    if (quantity >= tier.min_quantity) {
+      return {
+        price: tier.price_per_unit,
+        minQuantity: tier.min_quantity,
+        isBase: false
+      };
+    }
+  }
+  
+  // Return base price
+  const { rows: productRows } = await db.query('SELECT price FROM products WHERE id = $1', [productId]);
+  const basePrice = productRows[0]?.price || 0;
+  return {
+    price: basePrice,
+    minQuantity: null,
+    isBase: true
+  };
+}
+
 function isFlashSaleActive(product) {
   if (!product?.flash_sale_price || !product?.flash_sale_ends_at) return false;
   return new Date(product.flash_sale_ends_at).getTime() > Date.now();
@@ -211,7 +239,15 @@ router.post('/', auth, createPerUserRateLimiter(10, 60 * 1000), validate.order, 
   );
   const buyer = buyerRows[0];
 
+  // Get effective unit price and track applied tier (if any)
   const unitPrice = await getEffectiveUnitPrice(product, product_id, quantity);
+  let appliedTier = null;
+  
+  // For fixed-price products, track which tier was applied
+  if (product.pricing_model === 'fixed' || !product.pricing_model) {
+    appliedTier = await getTierPriceWithInfo(product_id, quantity);
+  }
+  
   const subtotal = unitPrice * quantity;
   let discount = 0;
   let appliedCoupon = null;
@@ -434,9 +470,15 @@ router.post('/', auth, createPerUserRateLimiter(10, 60 * 1000), validate.order, 
       status: 'paid',
       txHash,
       totalPrice,
+      unitPrice,
+      quantity,
       sorobanEscrow: useSorobanEscrow,
       discount: discount > 0 ? discount : undefined,
       bundleDiscount: bundleDiscount > 0 ? { amount: bundleDiscount, percent: appliedBundleDiscount.discount_percent, minProducts: appliedBundleDiscount.min_products } : undefined,
+      appliedPriceTier: appliedTier && !appliedTier.isBase ? { 
+        minQuantity: appliedTier.minQuantity, 
+        pricePerUnit: appliedTier.price 
+      } : undefined,
       fee: feeInfo.feeAmount > 0 ? { percent: feeInfo.feePercent, amount: feeInfo.feeAmount, farmerAmount: feeInfo.farmerAmount } : undefined,
       preorder: !!product.is_preorder,
       preorderDeliveryDate: product.preorder_delivery_date || null,
