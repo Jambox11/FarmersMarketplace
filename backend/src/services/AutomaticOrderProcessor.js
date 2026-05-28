@@ -268,11 +268,12 @@ class AutomaticOrderProcessor {
       }
 
       // Send payment using existing stellar utility
+      // Use Order# prefix for on-chain reconciliation (order ID in memo)
       const txHash = await sendPayment({
         senderSecret: buyer.stellar_secret_key,
         receiverPublicKey: farmer.stellar_public_key,
         amount: order.total_price,
-        memo: `AutoOrder#${order.id}`,
+        memo: `Order#${order.id}`,
       });
 
       return {
