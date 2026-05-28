@@ -6,6 +6,7 @@ const validate = require('../middleware/validate');
 const upload = require('../middleware/upload');
 const { err } = require('../middleware/error');
 const { sanitizeText } = require('../utils/sanitize');
+const { rewriteImageUrl } = require('../utils/cdn');
 const { sendBackInStockEmail } = require('../utils/mailer');
 const AutomaticOrderProcessor = require('../services/AutomaticOrderProcessor');
 
@@ -119,7 +120,14 @@ router.get('/', async (req, res) => {
     [...params, limit, offset]
   );
 
-  const payload = { success: true, data: products, total, page, limit, totalPages: Math.ceil(total / limit) };
+  // Rewrite local upload paths to CDN in production
+  const productsWithImages = products.map((p) => ({
+    ...p,
+    image_url: rewriteImageUrl(p.image_url),
+    farmer_avatar: rewriteImageUrl(p.farmer_avatar),
+  }));
+
+  const payload = { success: true, data: productsWithImages, total, page, limit, totalPages: Math.ceil(total / limit) };
   if (role !== 'farmer') {
     payload.data = payload.data.map(({ low_stock_threshold, ...rest }) => rest);
   }
@@ -389,7 +397,10 @@ router.get('/:id', async (req, res) => {
     [req.params.id]
   );
   if (!rows[0]) return err(res, 404, 'Product not found', 'not_found');
-  res.json({ success: true, data: rows[0] });
+  const product = rows[0];
+  product.image_url = rewriteImageUrl(product.image_url);
+  product.farmer_avatar = rewriteImageUrl(product.farmer_avatar);
+  res.json({ success: true, data: product });
 });
 
 // PATCH /api/products/:id

@@ -21,7 +21,9 @@ router.get('/:id', async (req, res) => {
      FROM products WHERE farmer_id = $1 AND quantity > 0 ORDER BY created_at DESC`,
     [req.params.id]
   );
-  res.json({ success: true, data: { ...rows[0], listings } });
+  const { rewriteImageUrl } = require('../utils/cdn');
+  const listingsWithImages = listings.map((l) => ({ ...l, image_url: rewriteImageUrl(l.image_url) }));
+  res.json({ success: true, data: { ...rows[0], listings: listingsWithImages } });
 });
 
 // PATCH /api/farmers/me

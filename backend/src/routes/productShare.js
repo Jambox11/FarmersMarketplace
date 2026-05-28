@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const db = require('../db/schema');
 const { err } = require('../middleware/error');
+const { rewriteImageUrl } = require('../utils/cdn');
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
 
@@ -33,7 +34,7 @@ router.get('/:id/share', async (req, res) => {
       productId: product.id,
       title,
       description,
-      image: product.image_url || null,
+      image: rewriteImageUrl(product.image_url) || null,
       url,
     },
   });

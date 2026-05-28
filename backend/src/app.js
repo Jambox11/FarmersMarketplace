@@ -67,7 +67,14 @@ app.use(
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (allowedOrigins.includes(origin)) return callback(null, true);
-      callback(new Error('Not allowed by CORS'));
+      const msg = `CORS origin not allowed: ${origin}`;
+      if (process.env.NODE_ENV === 'production') {
+        logger.warn(msg);
+        return callback(new Error('Not allowed by CORS'));
+      }
+      // In non-production environments, log and allow for developer convenience
+      logger.debug(msg);
+      return callback(null, true);
     },
     credentials: true,
   })
