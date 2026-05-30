@@ -16,9 +16,98 @@ const s = {
   addressCard: { border: '1px solid #e0e0e0', borderRadius: 10, padding: 16, marginBottom: 12, position: 'relative' },
   defaultBadge: { position: 'absolute', top: 12, right: 12, background: '#2d6a4f', color: '#fff', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 },
   empty: { color: '#888', fontSize: 14, textAlign: 'center', padding: 24 },
+  overlay: { position: 'fixed', inset: 0, background: '#0005', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  modal: { background: '#fff', borderRadius: 12, padding: 28, maxWidth: 480, width: '90%', boxShadow: '0 4px 24px #0003', maxHeight: '90vh', overflowY: 'auto' },
+  modalTitle: { fontWeight: 700, fontSize: 17, marginBottom: 16, color: '#2d6a4f' },
 };
 
 const EMPTY_FORM = { label: '', street: '', city: '', country: '', postal_code: '', is_default: false };
+
+function AddressFormModal({ initial, onSave, onCancel, loading }) {
+  const [form, setForm] = useState(initial || EMPTY_FORM);
+  const isEdit = Boolean(initial);
+
+  React.useEffect(() => {
+    function onKey(e) { if (e.key === 'Escape') onCancel(); }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    onSave(form);
+  }
+
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="addr-modal-title" style={s.overlay}>
+      <div style={s.modal}>
+        <div id="addr-modal-title" style={s.modalTitle}>{isEdit ? 'Edit Address' : 'Add New Address'}</div>
+        <form onSubmit={handleSubmit}>
+          <label style={s.label}>Label (e.g., Home, Work)</label>
+          <input
+            style={s.input}
+            value={form.label}
+            onChange={e => setForm({ ...form, label: e.target.value })}
+            required
+            maxLength={50}
+            autoFocus
+          />
+
+          <label style={s.label}>Street Address</label>
+          <input
+            style={s.input}
+            value={form.street}
+            onChange={e => setForm({ ...form, street: e.target.value })}
+            required
+            maxLength={200}
+          />
+
+          <label style={s.label}>City</label>
+          <input
+            style={s.input}
+            value={form.city}
+            onChange={e => setForm({ ...form, city: e.target.value })}
+            required
+            maxLength={100}
+          />
+
+          <label style={s.label}>Country</label>
+          <input
+            style={s.input}
+            value={form.country}
+            onChange={e => setForm({ ...form, country: e.target.value })}
+            required
+            maxLength={100}
+          />
+
+          <label style={s.label}>Postal Code (optional)</label>
+          <input
+            style={s.input}
+            value={form.postal_code}
+            onChange={e => setForm({ ...form, postal_code: e.target.value })}
+            maxLength={20}
+          />
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={form.is_default}
+              onChange={e => setForm({ ...form, is_default: e.target.checked })}
+            />
+            <span style={{ fontSize: 14, color: '#555' }}>Set as default address</span>
+          </label>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button type="button" style={s.btnSecondary} onClick={onCancel}>Cancel</button>
+            <button type="submit" style={s.btn} disabled={loading}>
+              {loading ? 'Saving...' : (isEdit ? 'Update Address' : 'Add Address')}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 function DeleteConfirmDialog({ onConfirm, onCancel }) {
   const cancelRef = React.useRef(null);
@@ -35,7 +124,7 @@ function DeleteConfirmDialog({ onConfirm, onCancel }) {
       role="dialog"
       aria-modal="true"
       aria-labelledby="del-dialog-title"
-      style={{ position: 'fixed', inset: 0, background: '#0005', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+      style={s.overlay}
     >
       <div style={{ background: '#fff', borderRadius: 12, padding: 28, maxWidth: 380, width: '90%', boxShadow: '0 4px 24px #0003' }}>
         <div id="del-dialog-title" style={{ fontWeight: 700, fontSize: 16, marginBottom: 10 }}>Delete Address</div>
@@ -54,11 +143,11 @@ function DeleteConfirmDialog({ onConfirm, onCancel }) {
 export default function AddressBook() {
   const { user } = useAuth();
   const [addresses, setAddresses] = useState([]);
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [editingId, setEditingId] = useState(null);
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingAddress, setEditingAddress] = useState(null); // null = adding new
 
   async function load() {
     try {
@@ -69,37 +158,33 @@ export default function AddressBook() {
 
   useEffect(() => { load(); }, []);
 
-  function startEdit(address) {
-    setEditingId(address.id);
-    setForm({
-      label: address.label,
-      street: address.street,
-      city: address.city,
-      country: address.country,
-      postal_code: address.postal_code || '',
-      is_default: !!address.is_default,
-    });
+  function openAdd() {
+    setEditingAddress(null);
+    setModalOpen(true);
   }
 
-  function cancelEdit() {
-    setEditingId(null);
-    setForm(EMPTY_FORM);
+  function openEdit(address) {
+    setEditingAddress(address);
+    setModalOpen(true);
   }
 
-  async function handleSubmit(e) {
-    e.preventDefault();
+  function closeModal() {
+    setModalOpen(false);
+    setEditingAddress(null);
+  }
+
+  async function handleSave(form) {
     setMsg(null);
     setLoading(true);
     try {
-      if (editingId) {
-        await api.updateAddress(editingId, form);
+      if (editingAddress) {
+        await api.updateAddress(editingAddress.id, form);
         setMsg({ type: 'ok', text: 'Address updated' });
       } else {
         await api.createAddress(form);
         setMsg({ type: 'ok', text: 'Address added' });
       }
-      setForm(EMPTY_FORM);
-      setEditingId(null);
+      closeModal();
       load();
     } catch (err) {
       setMsg({ type: 'err', text: err.message });
@@ -142,7 +227,10 @@ export default function AddressBook() {
 
   return (
     <div style={s.page}>
-      <div style={s.title}>📍 Address Book</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+        <div style={s.title}>📍 Address Book</div>
+        <button style={s.btn} onClick={openAdd}>+ Add Address</button>
+      </div>
 
       {msg && (
         <div style={{ ...s.msg, background: msg.type === 'ok' ? '#d8f3dc' : '#fee', color: msg.type === 'ok' ? '#2d6a4f' : '#c0392b' }}>
@@ -150,79 +238,10 @@ export default function AddressBook() {
         </div>
       )}
 
-      {/* Add/Edit Form */}
-      <div style={s.card}>
-        <h3 style={{ marginBottom: 16, color: '#333' }}>{editingId ? 'Edit Address' : 'Add New Address'}</h3>
-        <form onSubmit={handleSubmit}>
-          <label style={s.label}>Label (e.g., Home, Work)</label>
-          <input
-            style={s.input}
-            value={form.label}
-            onChange={e => setForm({ ...form, label: e.target.value })}
-            required
-            maxLength={50}
-          />
-
-          <label style={s.label}>Street Address</label>
-          <input
-            style={s.input}
-            value={form.street}
-            onChange={e => setForm({ ...form, street: e.target.value })}
-            required
-            maxLength={200}
-          />
-
-          <label style={s.label}>City</label>
-          <input
-            style={s.input}
-            value={form.city}
-            onChange={e => setForm({ ...form, city: e.target.value })}
-            required
-            maxLength={100}
-          />
-
-          <label style={s.label}>Country</label>
-          <input
-            style={s.input}
-            value={form.country}
-            onChange={e => setForm({ ...form, country: e.target.value })}
-            required
-            maxLength={100}
-          />
-
-          <label style={s.label}>Postal Code (optional)</label>
-          <input
-            style={s.input}
-            value={form.postal_code}
-            onChange={e => setForm({ ...form, postal_code: e.target.value })}
-            maxLength={20}
-          />
-
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={form.is_default}
-              onChange={e => setForm({ ...form, is_default: e.target.checked })}
-            />
-            <span style={{ fontSize: 14, color: '#555' }}>Set as default address</span>
-          </label>
-
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" style={s.btn} disabled={loading}>
-              {loading ? 'Saving...' : (editingId ? 'Update Address' : 'Add Address')}
-            </button>
-            {editingId && (
-              <button type="button" style={s.btnSecondary} onClick={cancelEdit}>Cancel</button>
-            )}
-          </div>
-        </form>
-      </div>
-
-      {/* Address List */}
       <div style={s.card}>
         <h3 style={{ marginBottom: 16, color: '#333' }}>My Addresses ({addresses.length})</h3>
         {addresses.length === 0 ? (
-          <div style={s.empty}>No addresses yet. Add your first delivery address above.</div>
+          <div style={s.empty}>No addresses yet. Add your first delivery address.</div>
         ) : (
           addresses.map(addr => (
             <div key={addr.id} style={s.addressCard}>
@@ -233,7 +252,7 @@ export default function AddressBook() {
                 {addr.postal_code ? ` ${addr.postal_code}` : ''}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                <button style={s.btnSm} onClick={() => startEdit(addr)}>Edit</button>
+                <button style={s.btnSm} onClick={() => openEdit(addr)}>Edit</button>
                 {!addr.is_default && (
                   <button style={s.btnSecondary} onClick={() => handleSetDefault(addr.id)}>Set Default</button>
                 )}
@@ -243,6 +262,22 @@ export default function AddressBook() {
           ))
         )}
       </div>
+
+      {modalOpen && (
+        <AddressFormModal
+          initial={editingAddress ? {
+            label: editingAddress.label,
+            street: editingAddress.street,
+            city: editingAddress.city,
+            country: editingAddress.country,
+            postal_code: editingAddress.postal_code || '',
+            is_default: !!editingAddress.is_default,
+          } : null}
+          onSave={handleSave}
+          onCancel={closeModal}
+          loading={loading}
+        />
+      )}
 
       {confirmDeleteId && (
         <DeleteConfirmDialog
