@@ -8,7 +8,7 @@ import { getErrorMessage } from '../utils/errorMessages';
 import { useTranslation } from 'react-i18next';
 
 const DISCLAIMER_KEY = 'testnet_disclaimer_dismissed';
-const RECONNECT_BASE_MS = 2000;
+const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
 const COMMON_ASSETS = [

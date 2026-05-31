@@ -996,6 +996,31 @@ router.get('/sales', auth, (req, res) => {
   res.json(sales);
 });
 
+// GET /api/orders/:id/payment-link — returns a SEP-0007 web+stellar:pay URI for the order
+router.get('/:id/payment-link', auth, async (req, res) => {
+  const order = db.prepare(`
+    SELECT o.*, p.name AS product_name, u.stellar_public_key AS farmer_public_key
+    FROM orders o
+    JOIN products p ON o.product_id = p.id
+    JOIN users u ON p.farmer_id = u.id
+    WHERE o.id = ?
+  `).get(req.params.id);
+
+  if (!order) return err(res, 404, 'Order not found', 'not_found');
+  if (order.buyer_id !== req.user.id && req.user.role !== 'admin')
+    return err(res, 403, 'Forbidden', 'forbidden');
+
+  const link = generatePaymentLink({
+    destination: order.farmer_public_key,
+    amount: String(order.total_price),
+    assetCode: 'XLM',
+    assetIssuer: '',
+    memo: `order:${order.id}`,
+  });
+
+  res.json({ success: true, paymentLink: link, orderId: order.id });
+});
+
 // SSE clients map: userId -> Set of response objects
 const orderClients = new Map();
 

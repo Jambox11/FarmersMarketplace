@@ -373,6 +373,7 @@ registerRoute('/', '/orders/budget', require('./orderBudgetGuard'));
 registerRoute('/', '/wallet/budget', require('./walletBudget'));
 registerRoute('/', '/products/share', require('./productShare'));
 registerRoute('/', '/products/market', require('./market'));
+registerRoute('/', '/market', require('./market'));
 registerRoute('/', '/subscriptions', require('./subscriptions').router);
 registerRoute('/', '/bundles', require('./bundles'));
 registerRoute('/', '/farmers/bundles', require('./bundleDiscounts'));

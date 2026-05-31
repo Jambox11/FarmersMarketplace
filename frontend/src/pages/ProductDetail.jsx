@@ -1031,30 +1031,67 @@ export default function ProductDetail() {
         })()}
 
         {/* Availability Calendar */}
-        {calendar.length > 0 && (
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#333', marginBottom: 8 }}>📅 Weekly Availability</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {calendar.map(w => (
-                <button
-                  key={w.week_start}
-                  disabled={!w.available}
-                  onClick={() => w.available && setSelectedWeek(w.week_start)}
-                  style={{
-                    padding: '5px 10px', borderRadius: 6, fontSize: 12, cursor: w.available ? 'pointer' : 'not-allowed',
-                    border: selectedWeek === w.week_start ? '2px solid #2d6a4f' : '1px solid #ddd',
-                    background: !w.available ? '#f5f5f5' : selectedWeek === w.week_start ? '#d8f3dc' : '#fff',
-                    color: !w.available ? '#bbb' : '#333',
-                    fontWeight: selectedWeek === w.week_start ? 700 : 400,
-                  }}
-                >
-                  {w.available ? '' : '✗ '}{new Date(w.week_start + 'T00:00:00Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                </button>
-              ))}
+        {calendar.length > 0 && (() => {
+          // Build a set of available week_start dates for quick lookup
+          const availableWeeks = new Set(calendar.filter(w => w.available).map(w => w.week_start));
+          // Determine the month to display: month of the first week in the calendar
+          const firstDate = new Date(calendar[0].week_start + 'T00:00:00Z');
+          const year = firstDate.getUTCFullYear();
+          const month = firstDate.getUTCMonth();
+          const monthLabel = firstDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
+          // Days in month
+          const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+          // Day of week for the 1st (0=Sun)
+          const firstDow = new Date(Date.UTC(year, month, 1)).getUTCDay();
+          // For each day, find which week_start (Monday) it belongs to
+          function getMondayOf(y, m, d) {
+            const date = new Date(Date.UTC(y, m, d));
+            const dow = date.getUTCDay(); // 0=Sun
+            const diff = dow === 0 ? -6 : 1 - dow;
+            const mon = new Date(date);
+            mon.setUTCDate(date.getUTCDate() + diff);
+            return mon.toISOString().slice(0, 10);
+          }
+          const cells = [];
+          for (let i = 0; i < firstDow; i++) cells.push(null); // leading blanks
+          for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+          return (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: '#333', marginBottom: 8 }}>📅 Availability — {monthLabel}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, maxWidth: 280 }}>
+                {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
+                  <div key={d} style={{ textAlign: 'center', fontSize: 11, color: '#888', fontWeight: 600, padding: '2px 0' }}>{d}</div>
+                ))}
+                {cells.map((day, i) => {
+                  if (!day) return <div key={`blank-${i}`} />;
+                  const weekKey = getMondayOf(year, month, day);
+                  const isAvail = availableWeeks.has(weekKey);
+                  const isSelected = selectedWeek === weekKey;
+                  return (
+                    <button
+                      key={day}
+                      disabled={!isAvail}
+                      onClick={() => isAvail && setSelectedWeek(weekKey)}
+                      title={isAvail ? `Week of ${weekKey}` : 'Unavailable'}
+                      style={{
+                        padding: '4px 0', borderRadius: 4, fontSize: 12, cursor: isAvail ? 'pointer' : 'default',
+                        border: isSelected ? '2px solid #2d6a4f' : '1px solid transparent',
+                        background: !isAvail ? '#f5f5f5' : isSelected ? '#d8f3dc' : '#e8f5e9',
+                        color: !isAvail ? '#ccc' : isSelected ? '#1b4332' : '#2d6a4f',
+                        fontWeight: isSelected ? 700 : 400,
+                      }}
+                    >{day}</button>
+                  );
+                })}
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 11, color: '#888' }}>
+                <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#e8f5e9', border: '1px solid #b7e4c7', borderRadius: 2, marginRight: 4 }} />Available</span>
+                <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#f5f5f5', borderRadius: 2, marginRight: 4 }} />Unavailable</span>
+              </div>
+              {selectedWeek && <div style={{ fontSize: 12, color: '#2d6a4f', marginTop: 4 }}>Week of {selectedWeek} selected</div>}
             </div>
-            {selectedWeek && <div style={{ fontSize: 12, color: '#2d6a4f', marginTop: 4 }}>Week of {selectedWeek} selected</div>}
-          </div>
-        )}
+          );
+        })()}
 
         {currentStock === 0 ? (
           <div>

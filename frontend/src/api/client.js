@@ -232,6 +232,7 @@ export const api = {
   getMyAlert: (productId) => request(`/products/${productId}/alert/status`),
 
   getXlmRate: () => request('/rates/xlm-usd'),
+  getMarketRate: () => request('/market/xlm-usdc'),
   bulkUpdatePrices: (updates, adjustment_percent) =>
     request('/products/bulk-price', { method: 'PATCH', body: { updates, adjustment_percent } }),
 
@@ -249,6 +250,8 @@ export const api = {
   adminGetOrders: (page = 1) => request(`/admin/orders?page=${page}`),
   adminDeactivateUser: (id) => request(`/admin/users/${id}`, { method: 'DELETE' }),
   adminGetStats: () => request('/admin/stats'),
+  adminGetDisputes: () => request('/disputes'),
+  adminResolveDispute: (id, body) => request(`/disputes/${id}`, { method: 'PATCH', body }),
   adminGetContracts: (qs = '') => request(`/admin/contracts${qs}`),
   adminRegisterContract: (body) => request('/admin/contracts', { method: 'POST', body }),
   adminDeployContract: (formData) => request('/admin/contracts/deploy', { method: 'POST', body: formData }),

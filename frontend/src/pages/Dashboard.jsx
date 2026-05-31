@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { api } from '../api/client';
+import { useXlmRate } from '../utils/useXlmRate';
 
 const s = {
   page: { maxWidth: 900, margin: '0 auto', padding: 16 },
@@ -73,6 +74,7 @@ const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
 export default function Dashboard() {
   const { user } = useAuth();
   const { t } = useTranslation();
+  const { rate, usd } = useXlmRate();
   const [products, setProducts] = useState([]);
   const [form, setForm] = useState(getEmptyForm);
   const [restockVals, setRestockVals] = useState({});
@@ -628,7 +630,12 @@ export default function Dashboard() {
         <title>Farmer Dashboard – Farmers Marketplace</title>
         <meta name="description" content="Manage your product listings, track sales, and grow your farm business on Farmers Marketplace." />
       </Helmet>
-      <div style={s.title}>🌾 Farmer Dashboard</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+        <div style={s.title}>🌾 Farmer Dashboard</div>
+        <div style={{ fontSize: 13, color: rate ? '#2d6a4f' : '#999', background: '#f0faf4', borderRadius: 8, padding: '6px 12px', fontWeight: 600 }}>
+          {rate ? `1 XLM ≈ $${rate.toFixed(4)} USDC` : 'Rate unavailable'}
+        </div>
+      </div>
 
       {/* Waitlist Analytics */}
       {waitlistAnalytics.length > 0 && (
@@ -760,6 +767,9 @@ export default function Dashboard() {
               <div key={key}>
                 <label style={s.label} htmlFor={id}>{label}</label>
                 <input id={id} style={s.input} value={form[key]} onChange={e => setForm({ ...form, [key]: e.target.value })} required={key !== 'unit'} />
+                {key === 'price' && usd(parseFloat(form.price)) && (
+                  <div style={{ fontSize: 12, color: '#2d6a4f', marginBottom: 4 }}>{usd(parseFloat(form.price))} USD</div>
+                )}
               </div>
             ))}
             <label style={s.label}>Description</label>

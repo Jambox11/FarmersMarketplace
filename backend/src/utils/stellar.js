@@ -1472,12 +1472,50 @@ async function getMemo(txHash) {
   }
 }
 
+/**
+ * Fetch the XLM/USDC order book from the Stellar DEX via Horizon.
+ * Returns { bids, asks, midPrice } — bids/asks limited to top 10 entries.
+ * Enforces a 5-second timeout on the Horizon request.
+ */
+async function getOrderBook(
+  baseAsset = { code: 'XLM', issuer: null },
+  counterAsset = {
+    code: 'USDC',
+    issuer: process.env.USDC_ISSUER || 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+  }
+) {
+  const base =
+    baseAsset.code === 'XLM'
+      ? StellarSdk.Asset.native()
+      : new StellarSdk.Asset(baseAsset.code, baseAsset.issuer);
+  const counter =
+    counterAsset.code === 'XLM'
+      ? StellarSdk.Asset.native()
+      : new StellarSdk.Asset(counterAsset.code, counterAsset.issuer);
+
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Order book request timed out')), 5000)
+  );
+
+  const result = await Promise.race([server.orderbook(base, counter).call(), timeout]);
+
+  const bids = (result.bids || []).slice(0, 10);
+  const asks = (result.asks || []).slice(0, 10);
+
+  const bestBid = bids.length ? parseFloat(bids[0].price) : 0;
+  const bestAsk = asks.length ? parseFloat(asks[0].price) : 0;
+  const midPrice = bestBid && bestAsk ? (bestBid + bestAsk) / 2 : bestBid || bestAsk || 0;
+
+  return { bids, asks, midPrice };
+}
+
 module.exports = {
   ...module.exports,
   invokeContract,
   simulateContract,
   getMemo,
   normalizeWasmHash,
+  getOrderBook,
 };
 
 // .
