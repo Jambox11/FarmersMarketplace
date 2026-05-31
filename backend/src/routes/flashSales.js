@@ -15,6 +15,9 @@ router.patch('/:id/flash-sale', auth, async (req, res) => {
   const flashSaleEndsAt = req.body.flash_sale_ends_at
     ? new Date(req.body.flash_sale_ends_at)
     : null;
+  const flashSaleStartsAt = req.body.flash_sale_starts_at
+    ? new Date(req.body.flash_sale_starts_at)
+    : null;
 
   const { rows } = await db.query('SELECT id, farmer_id, price, flash_sale_ends_at FROM products WHERE id = $1', [id]);
   const product = rows[0];
@@ -40,15 +43,26 @@ router.patch('/:id/flash-sale', auth, async (req, res) => {
         'validation_error'
       );
     }
+    if (!flashSaleStartsAt || Number.isNaN(flashSaleStartsAt.getTime())) {
+      return err(
+        res,
+        400,
+        'flash_sale_starts_at is required when setting flash sale',
+        'validation_error'
+      );
+    }
+    if (flashSaleStartsAt >= flashSaleEndsAt) {
+      return err(res, 400, 'flash_sale_starts_at must be before flash_sale_ends_at', 'validation_error');
+    }
   }
 
   await db.query(
-    'UPDATE products SET flash_sale_price = $1, flash_sale_ends_at = $2 WHERE id = $3',
-    [flashSalePrice, flashSaleEndsAt ? flashSaleEndsAt.toISOString() : null, id]
+    'UPDATE products SET flash_sale_price = $1, flash_sale_ends_at = $2, flash_sale_starts_at = $3 WHERE id = $4',
+    [flashSalePrice, flashSaleEndsAt ? flashSaleEndsAt.toISOString() : null, flashSaleStartsAt ? flashSaleStartsAt.toISOString() : null, id]
   );
 
   const { rows: updatedRows } = await db.query(
-    'SELECT id, price, flash_sale_price, flash_sale_ends_at FROM products WHERE id = $1',
+    'SELECT id, price, flash_sale_price, flash_sale_starts_at, flash_sale_ends_at FROM products WHERE id = $1',
     [id]
   );
   res.json({ success: true, data: updatedRows[0] });
@@ -67,7 +81,7 @@ router.delete('/:id/flash-sale', auth, async (req, res) => {
   if (product.farmer_id !== req.user.id) return err(res, 403, 'Not your product', 'forbidden');
 
   await db.query(
-    'UPDATE products SET flash_sale_price = NULL, flash_sale_ends_at = NULL WHERE id = $1',
+    'UPDATE products SET flash_sale_price = NULL, flash_sale_ends_at = NULL, flash_sale_starts_at = NULL WHERE id = $1',
     [id]
   );
   res.json({ success: true });
