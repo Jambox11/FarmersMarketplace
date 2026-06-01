@@ -7,6 +7,7 @@ import { useFavorites } from "../context/FavoritesContext";
 import { useCompare } from "../context/CompareContext";
 import { useXlmRate } from "../utils/useXlmRate";
 import { useDebounce } from "../utils/useDebounce";
+import { getRecentlyViewed } from "../utils/recentlyViewed";
 import StarRating from "../components/StarRating";
 import SkeletonProductCard from "../components/SkeletonProductCard";
 import Spinner from "../components/Spinner";
@@ -331,14 +332,16 @@ export default function Marketplace() {
   const [hasMore, setHasMore] = useState(true);
   const [bundles, setBundles] = useState([]);
   const [bundleMsg, setBundleMsg] = useState({});
+  const [expandedBundles, setExpandedBundles] = useState({});
   const [recommendations, setRecommendations] = useState([]);
   const [recsLoading, setRecsLoading] = useState(false);
   const [viewMode, setViewMode] = useState("grid"); // 'grid' | 'map'
   const [geoLoading, setGeoLoading] = useState(false);
+  const [recentlyViewed, setRecentlyViewed] = useState([]);
   const navigate = useNavigate();
   const { user } = useAuth();
   const { isFavorited, toggleFavorite } = useFavorites();
-  const { products: compareProducts, toggleProduct, isCompared } = useCompare();
+  const { products: compareProducts, toggleProduct, isCompared, clearProducts } = useCompare();
   const { usd } = useXlmRate();
 
   const debouncedSearch = useDebounce(filters.search, 300);
@@ -520,6 +523,11 @@ export default function Marketplace() {
     }
   }, [user]);
 
+  // Load recently viewed products
+  useEffect(() => {
+    setRecentlyViewed(getRecentlyViewed());
+  }, []);
+
   async function handleBuyBundle(bundleId) {
     if (!user) return navigate("/auth");
     setBundleMsg((m) => ({
@@ -686,10 +694,7 @@ export default function Marketplace() {
             </div>
             <button
               style={{ ...s.resetBtn, fontSize: 12 }}
-              onClick={() => {
-                const { clearProducts } = useCompare();
-                clearProducts();
-              }}
+              onClick={clearProducts}
             >
               Clear
             </button>
@@ -1164,13 +1169,33 @@ export default function Marketplace() {
                   <div style={s.name}>{b.name}</div>
                   <div style={s.farmer}>by {b.farmer_name}</div>
                   {b.description && <div style={s.desc}>{b.description}</div>}
-                  <ul style={s.bundleItems}>
-                    {b.items?.map((i) => (
-                      <li key={i.product_id}>
-                        {i.quantity} × {i.product_name} ({i.unit})
-                      </li>
-                    ))}
-                  </ul>
+                  <button
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#2d6a4f',
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      padding: 0,
+                      marginBottom: 8,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                    onClick={() => setExpandedBundles(prev => ({ ...prev, [b.id]: !prev[b.id] }))}
+                  >
+                    {expandedBundles[b.id] ? '▼' : '▶'} Included Items ({b.items?.length || 0})
+                  </button>
+                  {expandedBundles[b.id] && (
+                    <ul style={s.bundleItems}>
+                      {b.items?.map((i) => (
+                        <li key={i.product_id}>
+                          {i.quantity} × {i.product_name} ({i.unit})
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <div style={s.price}>{b.price} XLM</div>
                   {usd(b.price) && (
                     <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
@@ -1219,6 +1244,31 @@ export default function Marketplace() {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {recentlyViewed.length > 0 && (
+        <div>
+          <div style={s.sectionTitle}>Recently Viewed</div>
+          <div style={{ display: 'flex', overflowX: 'auto', gap: 16, paddingBottom: 16 }}>
+            {recentlyViewed.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => navigate(`/product/${p.id}`)}
+                style={{ ...s.card, minWidth: 200, cursor: 'pointer', flexShrink: 0 }}
+              >
+                {p.image_url && (
+                  <img
+                    src={p.image_url}
+                    alt={p.name}
+                    style={{ width: '100%', height: 120, objectFit: 'cover', borderRadius: 8, marginBottom: 12 }}
+                  />
+                )}
+                <div style={s.name}>{p.name}</div>
+                <div style={s.price}>{p.price} XLM</div>
+              </div>
+            ))}
           </div>
         </div>
       )}
