@@ -1,6 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Address, BytesN, Env};
 
 // TTL thresholds for persistent escrow entries (~57–115 days at 5 s/ledger).
 const TTL_MIN: u32 = 100_000;
@@ -17,6 +18,10 @@ pub enum EscrowError {
     InvalidAmount     = 5,
     AlreadyExists     = 6,
     TimeoutNotReached = 7,
+    InvalidWasmHash   = 8,
+    NoPendingAdmin    = 9,
+    /// Provided token does not match the token used at deposit time.
+    InvalidToken      = 8,
 }
 
 #[derive(Clone, PartialEq)]
@@ -33,6 +38,8 @@ pub enum EscrowStatus {
 pub enum DataKey {
     /// Per-escrow data — stored in persistent storage with individual TTL.
     Escrow(u64),
+    /// Per-escrow token address (stored separately so token used at deposit is enforced at release).
+    Token(u64),
     /// Contract metadata — stored in instance storage (shared TTL is fine).
     Admin,
     /// Contract metadata — stored in instance storage (shared TTL is fine).
@@ -40,6 +47,13 @@ pub enum DataKey {
 }
 
 /// Full escrow record. `token` stores the SAC address used for this escrow (#683).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AdminTransfer {
+    pub current_admin: Address,
+    pub pending_admin: Option<Address>,
+}
+
 #[derive(Clone)]
 #[contracttype]
 pub struct Escrow {
@@ -93,6 +107,8 @@ impl EscrowContract {
             timeout_unix,
             status: EscrowStatus::Active,
         };
+        // Persist the token used for this escrow so releases/refunds must use the same token contract.
+        env.storage().persistent().set(&DataKey::Token(order_id), &xlm_token);
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
         Ok(())
@@ -171,6 +187,16 @@ impl EscrowContract {
         }
 
         let token_client = token::Client::new(&env, &escrow.token);
+        let stored_token: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Token(order_id))
+            .ok_or(EscrowError::NotFound)?;
+        if stored_token != xlm_token {
+            return Err(EscrowError::InvalidToken);
+        }
+
+        let token_client = token::Client::new(&env, &xlm_token);
 
         let fee_amount = (escrow.amount * platform_fee_bps as i128) / 10_000;
         let farmer_amount = escrow.amount - fee_amount;
@@ -197,7 +223,8 @@ impl EscrowContract {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("admin already set");
         }
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        let transfer = AdminTransfer { current_admin: admin, pending_admin: None };
+        env.storage().instance().set(&DataKey::Admin, &transfer);
     }
 
     /// Refund funds to the buyer after timeout.
@@ -223,12 +250,29 @@ impl EscrowContract {
         }
 
         let token_client = token::Client::new(&env, &escrow.token);
+        let stored_token: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Token(order_id))
+            .ok_or(EscrowError::NotFound)?;
+        if stored_token != xlm_token {
+            return Err(EscrowError::InvalidToken);
+        }
+
+        let token_client = token::Client::new(&env, &xlm_token);
         token_client.transfer(&env.current_contract_address(), &escrow.buyer, &escrow.amount);
 
         escrow.status = EscrowStatus::Refunded;
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
         Ok(())
+    }
+
+    /// Permissionless claim for timeout refunds. Mirrors `refund` but present
+    /// with the explicit name `claim_timeout_refund` used in the spec/docs.
+    pub fn claim_timeout_refund(env: Env, xlm_token: Address, order_id: u64) -> Result<(), EscrowError> {
+        // Reuse refund implementation
+        Self::refund(env, xlm_token, order_id)
     }
 
     pub fn dispute(env: Env, order_id: u64, caller: Address) -> Result<(), EscrowError> {
@@ -258,11 +302,13 @@ impl EscrowContract {
     /// Admin resolves a disputed escrow. Uses the token stored in the record (#683).
     pub fn resolve_dispute(env: Env, order_id: u64, release_to_farmer: bool) {
         let admin: Address = env
+    pub fn resolve_dispute(env: Env, xlm_token: Address, order_id: u64, release_to_farmer: bool) {
+        let admin_transfer: AdminTransfer = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
             .expect("admin not set");
-        admin.require_auth();
+        admin_transfer.current_admin.require_auth();
 
         let mut escrow: Escrow = env
             .storage()
@@ -275,6 +321,16 @@ impl EscrowContract {
         }
 
         let token_client = token::Client::new(&env, &escrow.token);
+        let stored_token: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Token(order_id))
+            .expect("token not set for escrow");
+        if stored_token != xlm_token {
+            panic!("provided token does not match stored escrow token");
+        }
+
+        let token_client = token::Client::new(&env, &xlm_token);
         if release_to_farmer {
             token_client.transfer(&env.current_contract_address(), &escrow.farmer, &escrow.amount);
             escrow.status = EscrowStatus::Released;
@@ -284,6 +340,55 @@ impl EscrowContract {
         }
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+    }
+
+    /// Admin proposes a new admin (first step of two-step transfer).
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let mut transfer: AdminTransfer = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        transfer.current_admin.require_auth();
+        transfer.pending_admin = Some(new_admin);
+        env.storage().instance().set(&DataKey::Admin, &transfer);
+        env.events().publish(("admin", "proposed"), new_admin);
+    }
+
+    /// Pending admin accepts the transfer (second step).
+    pub fn accept_admin(env: Env) -> Result<(), EscrowError> {
+        let mut transfer: AdminTransfer = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        let pending = transfer.pending_admin.clone().ok_or(EscrowError::NoPendingAdmin)?;
+        pending.require_auth();
+        transfer.current_admin = pending.clone();
+        transfer.pending_admin = None;
+        env.storage().instance().set(&DataKey::Admin, &transfer);
+        env.events().publish(("admin", "accepted"), pending);
+        Ok(())
+    }
+
+    /// Admin-only contract WASM upgrade. Validates `new_wasm_hash` is non-zero
+    /// before invoking the deployer API to perform the update.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), EscrowError> {
+        let transfer: AdminTransfer = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        transfer.current_admin.require_auth();
+
+        let zero = BytesN::<32>::from_array(&env, &[0u8; 32]);
+        if new_wasm_hash == zero {
+            return Err(EscrowError::InvalidWasmHash);
+        }
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.events().publish(("admin", "upgrade"), ());
+        Ok(())
     }
 
     pub fn get(env: Env, order_id: u64) -> Result<Escrow, EscrowError> {

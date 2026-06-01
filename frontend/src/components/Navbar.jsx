@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { NavLink, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -26,10 +26,35 @@ export default function Navbar() {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [network, setNetwork] = useState(null);
+  const navRef = useRef(null);
 
   useEffect(() => {
     api.getNetwork().then(res => setNetwork(res.network)).catch(() => {});
   }, []);
+
+  // Escape key handler
+  useEffect(() => {
+    function handleEscape(e) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    if (open) {
+      document.addEventListener('keydown', handleEscape);
+      return () => document.removeEventListener('keydown', handleEscape);
+    }
+  }, [open]);
+
+  // Outside click handler
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (navRef.current && !navRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    }
+    if (open) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [open]);
 
   function handleLogout() {
     logout();
@@ -39,6 +64,8 @@ export default function Navbar() {
 
   return (
     <nav style={s.nav}>
+      <NavLink to="/" end style={({ isActive }) => (isActive ? s.activeLink : s.brand)}>🌿 FarmersMarket</NavLink>
+    <nav ref={navRef} style={s.nav}>
       <Link to="/" style={s.brand}>🌿 FarmersMarket</Link>
       {network && (
         <span style={{
