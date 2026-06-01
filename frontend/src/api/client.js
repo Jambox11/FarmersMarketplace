@@ -244,6 +244,10 @@ export const api = {
   removeStockAlert: (productId) => request(`/products/${productId}/alert`, { method: 'DELETE' }),
   getMyAlert: (productId) => request(`/products/${productId}/alert/status`),
 
+  joinWaitlist: (productId, body) => request(`/products/${productId}/waitlist`, { method: 'POST', body }),
+  leaveWaitlist: (productId) => request(`/products/${productId}/waitlist`, { method: 'DELETE' }),
+  getWaitlistStatus: (productId) => request(`/products/${productId}/waitlist/status`),
+
   getXlmRate: () => request('/rates/xlm-usd'),
   getMarketRate: () => request('/market/xlm-usdc'),
   bulkUpdatePrices: (updates, adjustment_percent) =>
@@ -259,9 +263,16 @@ export const api = {
   deleteAddress: (id) => request(`/addresses/${id}`, { method: 'DELETE' }),
   setDefaultAddress: (id) => request(`/addresses/${id}/default`, { method: 'PATCH' }),
 
-  adminGetUsers: (page = 1) => request(`/admin/users?page=${page}`),
+  adminGetUsers: (page = 1, filters = {}) => {
+    const qs = new URLSearchParams({ page });
+    if (filters.search) qs.append('search', filters.search);
+    if (filters.role) qs.append('role', filters.role);
+    return request(`/admin/users?${qs}`);
+  },
   adminGetOrders: (page = 1) => request(`/admin/orders?page=${page}`),
   adminDeactivateUser: (id) => request(`/admin/users/${id}`, { method: 'DELETE' }),
+  adminBanUser: (id, reason) => request(`/admin/users/${id}/ban`, { method: 'POST', body: { reason } }),
+  adminUnbanUser: (id) => request(`/admin/users/${id}/ban`, { method: 'DELETE' }),
   adminGetStats: () => request('/admin/stats'),
   adminGetDisputes: () => request('/disputes'),
   adminResolveDispute: (id, body) => request(`/disputes/${id}`, { method: 'PATCH', body }),

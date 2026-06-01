@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import ImageCropModal from '../components/ImageCropModal';
 import { Helmet } from 'react-helmet-async';
 import { api } from '../api/client';
 import { useXlmRate } from '../utils/useXlmRate';
@@ -120,6 +121,7 @@ export default function Dashboard() {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
+  const [cropSrc, setCropSrc] = useState(null); // raw object URL before crop
 
   // profile state
   const [profile, setProfile]       = useState({ bio: '', location: '', avatar_url: '', federation_name: '', latitude: '', longitude: '', farm_address: '' });
@@ -346,10 +348,21 @@ export default function Dashboard() {
       setImageErr(`Image must be ${MAX_SIZE_MB} MB or smaller.`);
       return false;
     }
-    setImageFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
-    setImageUrl(null); // reset confirmed URL until uploaded
+    // open crop modal instead of setting directly
+    setCropSrc(URL.createObjectURL(file));
+    setImageUrl(null);
     return true;
+  }
+
+  function handleCropConfirm(blob) {
+    const croppedFile = new File([blob], 'product-image.jpg', { type: 'image/jpeg' });
+    setImageFile(croppedFile);
+    setPreviewUrl(URL.createObjectURL(croppedFile));
+    setCropSrc(null);
+  }
+
+  function handleCropCancel() {
+    setCropSrc(null);
   }
 
   function handleFileChange(e) {
@@ -1169,10 +1182,20 @@ export default function Dashboard() {
                     : <span style={{ fontSize: 28, marginRight: 10 }}>🥬</span>
                   }
                   <div>
-                    <div style={{ fontWeight: 600 }}>{p.name}</div>
+                    <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {p.name}
+                      {(p.is_preorder || p.is_preorder === 1) && (
+                        <span style={{ fontSize: 11, fontWeight: 700, background: '#e07b00', color: '#fff', borderRadius: 4, padding: '2px 7px', letterSpacing: 0.3 }}>Pre-order</span>
+                      )}
+                    </div>
                     <div style={{ fontSize: 13, color: '#666' }}>
                       {p.pricing_model === 'pwyw' ? `Min ${p.min_price} XLM (PWYW)` : p.pricing_model === 'donation' ? 'Donation' : `${p.price} XLM`} · {p.quantity} {p.unit}
                     </div>
+                    {(p.is_preorder || p.is_preorder === 1) && p.preorder_delivery_date && (
+                      <div style={{ fontSize: 12, color: '#e07b00', marginTop: 2 }}>
+                        📅 Delivery: {p.preorder_delivery_date}
+                      </div>
+                    )}
                     {forecastByProduct[p.id]?.note ? (
                       <div style={{ fontSize: 12, color: '#888' }}>{forecastByProduct[p.id].note}</div>
                     ) : forecastByProduct[p.id] ? (
@@ -1764,6 +1787,15 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+      {/* Image Crop Modal */}
+      {cropSrc && (
+        <ImageCropModal
+          src={cropSrc}
+          onConfirm={handleCropConfirm}
+          onCancel={handleCropCancel}
+        />
+      )}
+
       {/* Availability Calendar Modal */}
       {calendarProductId && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}

@@ -18,6 +18,7 @@ import { useTranslation } from 'react-i18next';
 import QRCode from 'qrcode.react';
 import { useReviewForm } from '../hooks/useReviewForm';
 import { usePaymentLink } from '../hooks/usePaymentLink';
+import { addRecentlyViewed } from '../utils/recentlyViewed';
 
 const POLL_INTERVAL_MS = 3000;
 const TIMEOUT_MS = 60000;
@@ -114,6 +115,10 @@ export default function ProductDetail() {
    const [paidOrders, setPaidOrders] = useState([]);
    const [customPrice, setCustomPrice] = useState('');
   const [liveStock, setLiveStock] = useState(null); // Real-time stock from SSE
+  const [isOnWaitlist, setIsOnWaitlist] = useState(false);
+  const [waitlistPosition, setWaitlistPosition] = useState(null);
+  const [waitlistLoading, setWaitlistLoading] = useState(false);
+  const [waitlistError, setWaitlistError] = useState('');
 
    // Price tiers state
   const [tiers, setTiers] = useState([]);
@@ -148,6 +153,13 @@ export default function ProductDetail() {
   // Platform fee state
   const [feeInfo, setFeeInfo] = useState(null); // { feePercent, feeAmount, farmerAmount }
   const [shareMeta, setShareMeta] = useState(null);
+  // Auction state
+  const [auctionData, setAuctionData] = useState(null); // { current_bid, auction_end, highest_bidder }
+  const [bidAmount, setBidAmount] = useState('');
+  const [bidError, setBidError] = useState('');
+  const [bidLoading, setBidLoading] = useState(false);
+  const [bidSuccess, setBidSuccess] = useState(false);
+  const [auctionCountdown, setAuctionCountdown] = useState(null); // { days, hours, mins, secs, ended }
 
    // Helper to calculate distance between two coordinates in km
    const calculateDistance = (lat1, lng1, lat2, lng2) => {
@@ -244,6 +256,20 @@ export default function ProductDetail() {
   useEffect(() => {
     if (user?.role !== 'buyer') return;
     api.getMyAlert(id).then(res => setAlertSet(res.subscribed)).catch(() => {});
+  }, [id, user]);
+
+  useEffect(() => {
+    if (product) {
+      addRecentlyViewed(product);
+    }
+  }, [product?.id]);
+
+  useEffect(() => {
+    if (user?.role !== 'buyer') return;
+    api.getWaitlistStatus(id).then(res => {
+      setIsOnWaitlist(res.is_on_waitlist);
+      setWaitlistPosition(res.position || null);
+    }).catch(() => {});
   }, [id, user]);
 
    useEffect(() => {
@@ -396,6 +422,40 @@ export default function ProductDetail() {
     } catch { /* ignore */ }
     setAlertLoading(false);
   }
+
+  async function handleJoinWaitlist() {
+    if (!user) return navigate('/login');
+    if (!selectedAddressId) return setWaitlistError('Please select a delivery address');
+    setWaitlistLoading(true);
+    setWaitlistError('');
+    try {
+      const res = await api.joinWaitlist(product.id, { address_id: selectedAddressId });
+      setIsOnWaitlist(true);
+      setWaitlistPosition(res.position || 1);
+      showToast('Successfully joined waitlist', 'success');
+    } catch (e) {
+      setWaitlistError(getErrorMessage(e));
+      showToast(getErrorMessage(e), 'error');
+    } finally {
+      setWaitlistLoading(false);
+    }
+  }
+
+  async function handleLeaveWaitlist() {
+    setWaitlistLoading(true);
+    setWaitlistError('');
+    try {
+      await api.leaveWaitlist(product.id);
+      setIsOnWaitlist(false);
+      setWaitlistPosition(null);
+      showToast('Removed from waitlist', 'success');
+    } catch (e) {
+      setWaitlistError(getErrorMessage(e));
+      showToast(getErrorMessage(e), 'error');
+    } finally {
+      setWaitlistLoading(false);
+    }
+  }
   async function handleApplyCoupon() {
     if (!couponCode.trim()) return;
     setCouponLoading(true);
@@ -518,6 +578,61 @@ export default function ProductDetail() {
       setError(getErrorMessage(e));
     } finally {
       setWalletLoading(false);
+    }
+  }
+
+  // Load auction details if product is auction
+  useEffect(() => {
+    if (!product || !product.type || product.type !== 'auction') return;
+    api.getAuction(product.id).then(res => {
+      setAuctionData(res.data ?? res);
+    }).catch(() => setAuctionData(null));
+  }, [product?.id, product?.type]);
+
+  // Countdown timer for auction
+  useEffect(() => {
+    if (!auctionData || !auctionData.auction_end) return;
+    const tick = () => {
+      const now = Date.now();
+      const end = new Date(auctionData.auction_end).getTime();
+      const diff = Math.max(0, end - now);
+      if (diff <= 0) {
+        setAuctionCountdown({ days: 0, hours: 0, mins: 0, secs: 0, ended: true });
+        return;
+      }
+      const secs = Math.floor(diff / 1000);
+      const days = Math.floor(secs / 86400);
+      const hours = Math.floor((secs % 86400) / 3600);
+      const mins = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      setAuctionCountdown({ days, hours, mins, secs: s, ended: false });
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [auctionData?.auction_end]);
+
+  async function handlePlaceBid() {
+    setBidError('');
+    setBidSuccess(false);
+    const amount = parseFloat(bidAmount);
+    if (!amount || isNaN(amount)) return setBidError('Enter a valid bid amount');
+    if (auctionCountdown?.ended) return setBidError('Auction has ended');
+    if (amount <= (auctionData?.current_bid || 0)) {
+      return setBidError(`Bid must be higher than current bid (${(auctionData?.current_bid || 0).toFixed(2)} XLM)`);
+    }
+    setBidLoading(true);
+    try {
+      await api.placeBid(product.id, { amount });
+      setBidSuccess(true);
+      setBidAmount('');
+      // Refresh auction data
+      api.getAuction(product.id).then(res => setAuctionData(res.data ?? res)).catch(() => {});
+      setTimeout(() => setBidSuccess(false), 3000);
+    } catch (e) {
+      setBidError(getErrorMessage(e));
+    } finally {
+      setBidLoading(false);
     }
   }
 
@@ -1136,13 +1251,62 @@ export default function ProductDetail() {
           );
         })()}
 
-        {currentStock === 0 ? (
+        {product?.type === 'auction' && auctionData ? (
+          <div style={{ border: '2px solid #2d6a4f', borderRadius: 12, padding: 20, marginBottom: 20, background: '#f8fdf9' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#2d6a4f', marginBottom: 16 }}>🏆 Active Auction</div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: '#555', marginBottom: 4 }}>Current Highest Bid</div>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#2d6a4f' }}>{(auctionData.current_bid || 0).toFixed(2)} XLM</div>
+              {auctionData.highest_bidder && <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>by {auctionData.highest_bidder}</div>}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: '#555', marginBottom: 4 }}>Time Remaining</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: auctionCountdown?.ended ? '#c0392b' : '#2d6a4f' }}>
+                {auctionCountdown?.ended ? 'Auction Ended' : `${auctionCountdown?.days}d ${auctionCountdown?.hours}h ${auctionCountdown?.mins}m ${auctionCountdown?.secs}s`}
+              </div>
+            </div>
+            {!auctionCountdown?.ended && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                <input
+                  type="number"
+                  placeholder={`Higher than ${(auctionData.current_bid || 0).toFixed(2)} XLM`}
+                  value={bidAmount}
+                  onChange={e => { setBidAmount(e.target.value); setBidError(''); }}
+                  step="0.01"
+                  min={(auctionData.current_bid || 0) + 0.01}
+                  style={{ flex: 1, ...s.input, marginBottom: 0 }}
+                />
+                <button
+                  onClick={handlePlaceBid}
+                  disabled={bidLoading}
+                  style={{ ...s.btn, flex: '0 0 auto', whiteSpace: 'nowrap' }}
+                >
+                  {bidLoading ? 'Placing...' : 'Place Bid'}
+                </button>
+              </div>
+            )}
+            {bidError && <div style={{ ...s.err, marginBottom: 12 }}>{bidError}</div>}
+            {bidSuccess && <div style={{ background: '#d8f3dc', color: '#2d6a4f', padding: 12, borderRadius: 8, marginBottom: 12 }}>✅ Bid placed successfully!</div>}
+          </div>
+        ) : currentStock === 0 ? (
           <div>
             <div style={{ color: '#c0392b', fontWeight: 600, marginBottom: 12 }}>{t('productDetail.outOfStock')}</div>
             {user?.role === 'buyer' && (
-              <button style={{ ...s.btn, background: alertSet ? '#888' : '#2d6a4f' }} onClick={handleAlert} disabled={alertLoading}>
-                {alertLoading ? '...' : alertSet ? t('productDetail.alertSet') : t('productDetail.notifyMe')}
-              </button>
+              <>
+                {isOnWaitlist ? (
+                  <>
+                    {waitlistPosition && <div style={{ fontSize: 14, color: '#2d6a4f', marginBottom: 12 }}>You're #{waitlistPosition} on the waitlist</div>}
+                    <button style={{ ...s.btn, background: '#888', marginBottom: 8 }} onClick={handleLeaveWaitlist} disabled={waitlistLoading}>
+                      {waitlistLoading ? '...' : 'Leave Waitlist'}
+                    </button>
+                  </>
+                ) : (
+                  <button style={{ ...s.btn, background: '#2d6a4f', marginBottom: 8 }} onClick={handleJoinWaitlist} disabled={waitlistLoading}>
+                    {waitlistLoading ? '...' : 'Join Waitlist'}
+                  </button>
+                )}
+                {waitlistError && <div style={s.err}>{waitlistError}</div>}
+              </>
             )}
           </div>
         ) : (
