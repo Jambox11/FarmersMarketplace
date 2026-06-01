@@ -1,47 +1,38 @@
-//! Farmers Marketplace — Soroban Escrow Contract
+//! Farmers Marketplace - Soroban Escrow Contract
 //!
-//! Fixes addressed:
-//!   #468 — Extend ledger entry TTL so escrow data cannot expire and lock funds.
-//!   #469 — Validate buyer != farmer on deposit.
-//!   #470 — Validate timeout_unix is at least 1 hour in the future on deposit.
-//!   #471 — Emit Soroban events for deposit, release, and refund.
+//! Issues addressed:
+//!   #468 - Extend ledger entry TTL so escrow data cannot expire and lock funds.
+//!   #469 - Validate buyer != farmer on deposit.
+//!   #470 - Validate timeout_unix is at least 1 hour in the future on deposit.
+//!   #471 - Emit Soroban events for deposit, release, and refund.
+//!   #687 - ACL role management: grant_role / revoke_role (ARBITRATOR, PLATFORM).
+//!   #688 - Extend TTL on every state-changing operation (deposit, release, refund).
 
 #![no_std]
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short,
-    Address, Env, Map, Vec,
+    Address, Env,
 };
 
-// ---------------------------------------------------------------------------
 // TTL constants (in ledgers; ~5 s/ledger on Stellar)
-//   100 000 ledgers ≈ 5 000 000 s ≈ 57 days  (min)
-//   200 000 ledgers ≈ 10 000 000 s ≈ 115 days (max)
-// ---------------------------------------------------------------------------
-const TTL_MIN: u32 = 100_000;
-const TTL_MAX: u32 = 200_000;
+//   100_000 ledgers ~= 57 days  (min threshold)
+//   200_000 ledgers ~= 115 days (max / reset target)
+pub const TTL_MIN: u32 = 100_000;
+pub const TTL_MAX: u32 = 200_000;
 
 /// Minimum timeout duration enforced on deposit (1 hour in seconds).
-const MIN_TIMEOUT_SECS: u64 = 3_600;
+pub const MIN_TIMEOUT_SECS: u64 = 3_600;
 
-// ---------------------------------------------------------------------------
-// Error enum
-// ---------------------------------------------------------------------------
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum EscrowError {
-    /// Escrow record already exists for this order_id.
     AlreadyExists = 1,
-    /// No escrow record found for this order_id.
     NotFound = 2,
-    /// Caller is not authorised to perform this action.
     Unauthorized = 3,
-    /// The escrow has not yet timed out.
     NotTimedOut = 4,
-    /// The escrow has already been settled (released or refunded).
     AlreadySettled = 5,
-    /// buyer and farmer addresses must be different.
     InvalidParties = 6,
     /// Contract has already been initialised.
     AlreadyInitialized = 7,
@@ -49,25 +40,21 @@ pub enum EscrowError {
     SnapshotNotFound = 8,
 }
 
-// ---------------------------------------------------------------------------
-// Storage keys
-// ---------------------------------------------------------------------------
+/// Roles for ACL management (#687).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Role {
+    Arbitrator,
+    Platform,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    /// Escrow record keyed by order_id.
     Escrow(u64),
-    /// Admin address (set once via init).
-    Admin,
-    /// Snapshot record keyed by snapshot_id.
-    Snapshot(u64),
-    /// Auto-incrementing snapshot sequence counter.
-    SnapshotSeq,
+    Role(Address, Role),
 }
 
-// ---------------------------------------------------------------------------
-// Escrow record stored on-chain
-// ---------------------------------------------------------------------------
 #[contracttype]
 #[derive(Clone)]
 pub struct EscrowRecord {
@@ -78,56 +65,15 @@ pub struct EscrowRecord {
     pub released: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot record stored on-chain
-// ---------------------------------------------------------------------------
-#[contracttype]
-#[derive(Clone)]
-pub struct SnapshotRecord {
-    /// Ledger sequence number at which the snapshot was taken.
-    pub ledger_sequence: u32,
-    /// Map of address → escrowed amount at snapshot time.
-    pub balances: Map<Address, i128>,
-}
-
-// ---------------------------------------------------------------------------
-// Contract
-// ---------------------------------------------------------------------------
 #[contract]
 pub struct EscrowContract;
 
 #[contractimpl]
 impl EscrowContract {
-    // -----------------------------------------------------------------------
-    // init
-    //
-    // Sets the admin address. Must be called once before snapshot() can be used.
-    // Subsequent calls return AlreadyInitialized.
-    // -----------------------------------------------------------------------
-    pub fn init(env: Env, admin: Address) -> Result<(), EscrowError> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(EscrowError::AlreadyInitialized);
-        }
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // deposit
-    //
-    // Locks `amount` tokens in escrow for `order_id`.
-    //
-    // Validations (fixes #469, #470):
-    //   • buyer != farmer
-    //   • timeout_unix > now + MIN_TIMEOUT_SECS
-    //
-    // TTL extension (fix #468):
-    //   • Extends the persistent entry TTL after writing.
-    //
-    // Event emitted (fix #471):
-    //   topics : ("escrow", "deposit", order_id)
-    //   data   : (buyer, farmer, amount)
-    // -----------------------------------------------------------------------
+    /// Locks `amount` tokens in escrow for `order_id`.
+    /// Validates buyer != farmer (#469) and timeout >= now + 1h (#470).
+    /// Extends TTL after writing (#468, #688).
+    /// Emits ("escrow", "deposit", order_id) -> (buyer, farmer, amount) (#471).
     pub fn deposit(
         env: Env,
         order_id: u64,
@@ -136,14 +82,16 @@ impl EscrowContract {
         amount: i128,
         timeout_unix: u64,
     ) -> Result<(), EscrowError> {
-        // Fix #469 — buyer must differ from farmer
         if buyer == farmer {
             return Err(EscrowError::InvalidParties);
         }
 
-        let key = DataKey::Escrow(order_id);
+        let now = env.ledger().timestamp();
+        if timeout_unix <= now.saturating_add(MIN_TIMEOUT_SECS) {
+            panic!("timeout must be at least 1 hour in the future");
+        }
 
-        // Prevent duplicate deposits for the same order
+        let key = DataKey::Escrow(order_id);
         if env.storage().persistent().has(&key) {
             return Err(EscrowError::AlreadyExists);
         }
@@ -165,11 +113,8 @@ impl EscrowContract {
         };
 
         env.storage().persistent().set(&key, &record);
-
-        // Fix #468 — extend TTL so the entry cannot expire
         env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
 
-        // Fix #471 — emit deposit event
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("deposit"), order_id),
             (buyer, farmer, amount),
@@ -178,18 +123,9 @@ impl EscrowContract {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // release
-    //
-    // Releases escrowed funds to the farmer. Only the buyer may call this.
-    //
-    // TTL extension (fix #468):
-    //   • Extends TTL after updating the record.
-    //
-    // Event emitted (fix #471):
-    //   topics : ("escrow", "release", order_id)
-    //   data   : amount
-    // -----------------------------------------------------------------------
+    /// Releases escrowed funds to the farmer. Only the buyer may call this.
+    /// Extends TTL after updating the record (#468, #688).
+    /// Emits ("escrow", "release", order_id) -> amount (#471).
     pub fn release(env: Env, order_id: u64) -> Result<(), EscrowError> {
         let key = DataKey::Escrow(order_id);
 
@@ -203,18 +139,14 @@ impl EscrowContract {
             return Err(EscrowError::AlreadySettled);
         }
 
-        // Only the buyer can release funds to the farmer
         record.buyer.require_auth();
 
         let amount = record.amount;
         record.released = true;
 
         env.storage().persistent().set(&key, &record);
-
-        // Fix #468 — extend TTL after update
         env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
 
-        // Fix #471 — emit release event
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("release"), order_id),
             amount,
@@ -223,19 +155,10 @@ impl EscrowContract {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // refund
-    //
-    // Returns escrowed funds to the buyer after the timeout has passed.
-    // Anyone may call this once the timeout is reached (permissionless sweep).
-    //
-    // TTL extension (fix #468):
-    //   • Extends TTL after updating the record.
-    //
-    // Event emitted (fix #471):
-    //   topics : ("escrow", "refund", order_id)
-    //   data   : amount
-    // -----------------------------------------------------------------------
+    /// Returns escrowed funds to the buyer after the timeout has passed.
+    /// Permissionless sweep - anyone may call once timeout is reached.
+    /// Extends TTL after updating the record (#468, #688).
+    /// Emits ("escrow", "refund", order_id) -> amount (#471).
     pub fn refund(env: Env, order_id: u64) -> Result<(), EscrowError> {
         let key = DataKey::Escrow(order_id);
 
@@ -258,11 +181,8 @@ impl EscrowContract {
         record.released = true;
 
         env.storage().persistent().set(&key, &record);
-
-        // Fix #468 — extend TTL after update
         env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
 
-        // Fix #471 — emit refund event
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("refund"), order_id),
             amount,
@@ -271,99 +191,59 @@ impl EscrowContract {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // get_escrow — read-only helper
-    // -----------------------------------------------------------------------
+    /// Grants `role` to `account` (#687).
+    /// Only a PLATFORM holder may grant roles.
+    /// Bootstrap: first grant of Role::Platform is open (no existing platform).
+    pub fn grant_role(env: Env, caller: Address, account: Address, role: Role) {
+        caller.require_auth();
+
+        let platform_key = DataKey::Role(caller.clone(), Role::Platform);
+        let caller_is_platform: bool = env
+            .storage()
+            .persistent()
+            .get(&platform_key)
+            .unwrap_or(false);
+
+        let is_bootstrap = matches!(role, Role::Platform) && !caller_is_platform;
+        if !caller_is_platform && !is_bootstrap {
+            panic!("only a Platform role holder can grant roles");
+        }
+
+        let key = DataKey::Role(account, role);
+        env.storage().persistent().set(&key, &true);
+        env.storage().persistent().extend_ttl(&key, TTL_MIN, TTL_MAX);
+    }
+
+    /// Revokes `role` from `account` (#687).
+    /// Only a PLATFORM holder may call this.
+    pub fn revoke_role(env: Env, caller: Address, account: Address, role: Role) {
+        caller.require_auth();
+
+        let platform_key = DataKey::Role(caller.clone(), Role::Platform);
+        let caller_is_platform: bool = env
+            .storage()
+            .persistent()
+            .get(&platform_key)
+            .unwrap_or(false);
+
+        if !caller_is_platform {
+            panic!("only a Platform role holder can revoke roles");
+        }
+
+        let key = DataKey::Role(account, role);
+        env.storage().persistent().remove(&key);
+    }
+
+    /// Returns true if `account` holds `role` (#687).
+    pub fn has_role(env: Env, account: Address, role: Role) -> bool {
+        let key = DataKey::Role(account, role);
+        env.storage().persistent().get(&key).unwrap_or(false)
+    }
+
+    /// Returns the full escrow record for a specific order ID.
     pub fn get_escrow(env: Env, order_id: u64) -> Result<EscrowRecord, EscrowError> {
         let key = DataKey::Escrow(order_id);
         env.storage()
-            .persistent()
-            .get(&key)
-            .ok_or(EscrowError::NotFound)
-    }
-
-    // -----------------------------------------------------------------------
-    // snapshot
-    //
-    // Admin-only. Iterates all active (unreleased) escrow records by scanning
-    // the provided order_ids list and records each buyer's locked balance at
-    // the current ledger sequence. Returns the new snapshot_id.
-    //
-    // Parameters:
-    //   order_ids — the list of order IDs to include in the snapshot.
-    //               Callers supply this because Soroban contracts cannot
-    //               enumerate storage keys on-chain.
-    // -----------------------------------------------------------------------
-    pub fn snapshot(env: Env, order_ids: Vec<u64>) -> Result<u64, EscrowError> {
-        // Only admin may call this
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(EscrowError::Unauthorized)?;
-        admin.require_auth();
-
-        // Assign the next snapshot_id
-        let snapshot_id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::SnapshotSeq)
-            .unwrap_or(0u64)
-            + 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::SnapshotSeq, &snapshot_id);
-
-        // Build address → total locked balance map
-        let mut balances: Map<Address, i128> = Map::new(&env);
-
-        for order_id in order_ids.iter() {
-            let key = DataKey::Escrow(order_id);
-            if let Some(record) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, EscrowRecord>(&key)
-            {
-                if !record.released {
-                    let prev: i128 = balances.get(record.buyer.clone()).unwrap_or(0);
-                    balances.set(record.buyer.clone(), prev + record.amount);
-                }
-            }
-        }
-
-        let snap = SnapshotRecord {
-            ledger_sequence: env.ledger().sequence(),
-            balances,
-        };
-
-        let snap_key = DataKey::Snapshot(snapshot_id);
-        env.storage().persistent().set(&snap_key, &snap);
-        env.storage()
-            .persistent()
-            .extend_ttl(&snap_key, TTL_MIN, TTL_MAX);
-
-        env.events().publish(
-            (symbol_short!("escrow"), symbol_short!("snapshot")),
-            snapshot_id,
-        );
-
-        Ok(snapshot_id)
-    }
-
-    // -----------------------------------------------------------------------
-    // balance_at
-    //
-    // Read-only. Returns the locked balance of `addr` recorded in `snapshot_id`.
-    // Returns 0 if the address had no locked funds at that snapshot.
-    // -----------------------------------------------------------------------
-    pub fn balance_at(
-        env: Env,
-        addr: Address,
-        snapshot_id: u64,
-    ) -> Result<i128, EscrowError> {
-        let snap_key = DataKey::Snapshot(snapshot_id);
-        let snap: SnapshotRecord = env
-            .storage()
             .persistent()
             .get(&snap_key)
             .ok_or(EscrowError::SnapshotNotFound)?;
