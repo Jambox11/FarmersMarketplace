@@ -13,6 +13,8 @@ process.env.RATE_LIMIT_AUTH_MAX = '10000';
 process.env.RATE_LIMIT_GENERAL_MAX = '10000';
 process.env.RATE_LIMIT_ORDER_MAX = '10000';
 process.env.RATE_LIMIT_SEND_MAX = '10000';
+process.env.WEB_PUSH_VAPID_PUBLIC_KEY = process.env.WEB_PUSH_VAPID_PUBLIC_KEY || 'test-vapid-public-key';
+process.env.WEB_PUSH_VAPID_PRIVATE_KEY = process.env.WEB_PUSH_VAPID_PRIVATE_KEY || 'test-vapid-private-key';
 
 // --- DB mock ---
 jest.mock('../src/db/schema', () => ({
@@ -93,6 +95,16 @@ jest.mock('../src/cache', () => ({
 // --- requestLogger mock (uuid is ESM in v13, avoid parse error) ---
 jest.mock('../src/middleware/requestLogger', () => (req, res, next) => next());
 
+// --- web-push mock — prevents js-nacl WASM from loading in the test environment ---
+jest.mock('web-push', () => ({
+  sendNotification: jest.fn().mockResolvedValue({ statusCode: 201 }),
+  setVapidDetails: jest.fn(),
+  generateVAPIDKeys: jest.fn(() => ({
+    publicKey: 'BDd3_hVL7e_J0VL5R5k1sMnfNjz6kgBJyKJMN_ZXGwc',
+    privateKey: 'test-private-key-for-jest',
+  })),
+}));
+
 // --- Routes mock ---
 jest.mock('../src/routes', () => {
   const express = require('express');
@@ -102,7 +114,7 @@ jest.mock('../src/routes', () => {
   router.use('/api/orders', require('../src/routes/orders'));
   router.use('/api/orders/:id/return', require('../src/routes/returns'));
   router.use('/api/analytics', require('../src/routes/analytics'));
-  router.use('/api/orders', require('../src/routes/orders'));
+  router.use('/api/notifications', require('../src/routes/notifications'));
   return router;
 });
 
@@ -112,6 +124,10 @@ jest.mock('../src/utils/mailer', () => ({
   sendLowStockAlert: jest.fn().mockResolvedValue({}),
   sendStatusUpdateEmail: jest.fn().mockResolvedValue({}),
   sendBackInStockEmail: jest.fn().mockResolvedValue({}),
+  sendReturnEmail: jest.fn().mockResolvedValue({}),
+  sendFreshnessAlert: jest.fn().mockResolvedValue({}),
+  sendProductExpiredEmail: jest.fn().mockResolvedValue({}),
+  sendContractAlert: jest.fn().mockResolvedValue({}),
 }));
 
 // --- requestLogger mock (uuid v13 is ESM-only, incompatible with Jest CJS) ---
@@ -160,4 +176,5 @@ beforeEach(() => {
   mailer.sendLowStockAlert.mockResolvedValue({});
   mailer.sendStatusUpdateEmail.mockResolvedValue({});
   mailer.sendBackInStockEmail.mockResolvedValue({});
+  mailer.sendReturnEmail.mockResolvedValue({});
 });

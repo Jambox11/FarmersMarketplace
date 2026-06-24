@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Circle, useMap, useMapEvents } from 'react-leaflet';
 import { useNavigate } from 'react-router-dom';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -13,6 +13,8 @@ L.Icon.Default.mergeOptions({
 });
 
 const DEFAULT_CENTER = [0, 0];
+// Cluster radius in degrees of lat/lng, scaled by zoom level
+const BASE_CLUSTER_RADIUS = 2.0;
 
 const s = {
   popup: { minWidth: 180 },
@@ -43,15 +45,54 @@ function groupByFarmer(products) {
   return Array.from(map.values());
 }
 
-// Calculate distance between two coordinates in km
-function calculateDistance(lat1, lng1, lat2, lng2) {
-  const R = 6371; // Earth's radius in km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+/**
+ * Groups farm location pins into spatial clusters at the given zoom level.
+ * Returns an array of items, each either a single group ({ type: 'pin', ...group })
+ * or a merged cluster ({ type: 'cluster', lat, lng, count, groups: [...] }).
+ */
+function buildClusters(groups, zoom) {
+  // Radius shrinks as zoom increases — more spread out at higher zoom
+  const radius = BASE_CLUSTER_RADIUS / Math.pow(2, Math.max(0, zoom - 5));
+  const assigned = new Array(groups.length).fill(false);
+  const clusters = [];
+
+  for (let i = 0; i < groups.length; i++) {
+    if (assigned[i]) continue;
+    const members = [groups[i]];
+    assigned[i] = true;
+
+    for (let j = i + 1; j < groups.length; j++) {
+      if (assigned[j]) continue;
+      const dLat = groups[i].lat - groups[j].lat;
+      const dLng = groups[i].lng - groups[j].lng;
+      if (Math.abs(dLat) <= radius && Math.abs(dLng) <= radius) {
+        members.push(groups[j]);
+        assigned[j] = true;
+      }
+    }
+
+    if (members.length === 1) {
+      clusters.push({ type: 'pin', ...members[0] });
+    } else {
+      const lat = members.reduce((s, m) => s + m.lat, 0) / members.length;
+      const lng = members.reduce((s, m) => s + m.lng, 0) / members.length;
+      clusters.push({ type: 'cluster', lat, lng, count: members.length, groups: members });
+    }
+  }
+  return clusters;
+}
+
+function clusterIcon(count) {
+  return L.divIcon({
+    className: '',
+    html: `<div tabindex="0" role="button" aria-label="${count} farms clustered" style="
+      background:#2d6a4f;color:#fff;border-radius:50%;width:40px;height:40px;
+      display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;
+      border:3px solid #d8f3dc;box-shadow:0 2px 6px rgba(0,0,0,0.3);cursor:pointer;
+    ">${count}</div>`,
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
+  });
 }
 
 function RecenterMap({ center }) {
@@ -60,9 +101,101 @@ function RecenterMap({ center }) {
   return null;
 }
 
-export default function MapView({ products = [], buyerLat, buyerLng, onBuy }) {
-export default function MapView({ products = [], lat, lng, farmerName, onFarmerClick }) {
+function ZoomTracker({ onZoom }) {
+  useMapEvents({ zoomend: (e) => onZoom(e.target.getZoom()) });
+  return null;
+}
+
+function ClusterLayer({ groups, onFarmerClick }) {
+  const map = useMap();
+  const [zoom, setZoom] = useState(() => map.getZoom());
   const navigate = useNavigate();
+  const clusters = buildClusters(groups, zoom);
+
+  return (
+    <>
+      <ZoomTracker onZoom={setZoom} />
+      {clusters.map((item, i) => {
+        if (item.type === 'cluster') {
+          return (
+            <Marker
+              key={`cluster-${i}`}
+              position={[item.lat, item.lng]}
+              icon={clusterIcon(item.count)}
+              eventHandlers={{
+                click: () => map.setView([item.lat, item.lng], zoom + 2),
+                keypress: (e) => { if (e.originalEvent.key === 'Enter') map.setView([item.lat, item.lng], zoom + 2); },
+              }}
+            >
+              <Popup>
+                <div style={s.popup}>
+                  <div style={s.name}>{item.count} farms in this area</div>
+                  <button style={s.btn} onClick={() => map.setView([item.lat, item.lng], zoom + 2)}>
+                    Zoom in to see farms
+                  </button>
+                </div>
+              </Popup>
+            </Marker>
+          );
+        }
+
+        const group = item;
+        return (
+          <React.Fragment key={`pin-${i}`}>
+            <Marker
+              position={[group.lat, group.lng]}
+              eventHandlers={onFarmerClick ? {
+                click: () => onFarmerClick(group.farmerName ?? group.products[0]?.farmer_name),
+              } : {}}
+            >
+              <Popup>
+                <div style={s.popup}>
+                  {group.products.length > 0 ? (
+                    group.products.map(p => (
+                      <div
+                        key={p.id}
+                        style={{
+                          marginBottom: group.products.length > 1 ? 12 : 0,
+                          paddingBottom: group.products.length > 1 ? 12 : 0,
+                          borderBottom: group.products.length > 1 ? '1px solid #eee' : 'none',
+                        }}
+                      >
+                        <div style={s.name}>{p.name}</div>
+                        <div style={s.price}>{p.price} XLM / {p.unit}</div>
+                        <div style={s.farmer}>🌾 {p.farmer_name}</div>
+                        {p.farmer_farm_address && <div style={s.address}>📍 {p.farmer_farm_address}</div>}
+                        <button style={s.btn} onClick={() => navigate(`/products/${p.id}`)}>View &amp; Buy</button>
+                      </div>
+                    ))
+                  ) : (
+                    <div>
+                      <div style={s.name}>{group.farmerName || 'Farm location'}</div>
+                      <div style={s.farmer}>🌾 {group.farmerName || 'Farmer'}</div>
+                    </div>
+                  )}
+                </div>
+              </Popup>
+            </Marker>
+            {group.products.map(p => {
+              if (!p.delivery_radius || p.origin_lat == null || p.origin_lng == null) return null;
+              const radiusKm = p.delivery_radius > 1000 ? p.delivery_radius / 1000 : p.delivery_radius;
+              return (
+                <Circle
+                  key={`geo-${p.id}`}
+                  center={[p.origin_lat, p.origin_lng]}
+                  radius={radiusKm * 1000}
+                  pathOptions={{ color: '#2d6a4f', weight: 2, opacity: 0.5, fillColor: '#d8f3dc', fillOpacity: 0.1 }}
+                />
+              );
+            })}
+          </React.Fragment>
+        );
+      })}
+    </>
+  );
+}
+
+export default function MapView({ products = [], lat, lng, farmerName, onFarmerClick }) {
   const hasSingleLocation = lat != null && lng != null;
   const groups = hasSingleLocation
     ? [{ lat, lng, farmerName, products: [] }]
@@ -114,71 +247,7 @@ export default function MapView({ products = [], lat, lng, farmerName, onFarmerC
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         {center && <RecenterMap center={mapCenter} />}
-        {groups.map((group, i) => (
-          <React.Fragment key={i}>
-            <Marker position={[group.lat, group.lng]}>
-              <Popup>
-                <div style={s.popup}>
-                  {group.products.map(p => (
-                    <div key={p.id} style={{ marginBottom: group.products.length > 1 ? 12 : 0, paddingBottom: group.products.length > 1 ? 12 : 0, borderBottom: group.products.length > 1 ? '1px solid #eee' : 'none' }}>
-          <Marker
-            key={i}
-            position={[group.lat, group.lng]}
-            eventHandlers={onFarmerClick ? {
-              click: () => onFarmerClick(group.farmerName ?? group.products[0]?.farmer_name),
-            } : {}}
-          >
-            <Popup>
-              <div style={s.popup}>
-                {group.products.length > 0 ? (
-                  group.products.map(p => (
-                    <div
-                      key={p.id}
-                      style={{
-                        marginBottom: group.products.length > 1 ? 12 : 0,
-                        paddingBottom: group.products.length > 1 ? 12 : 0,
-                        borderBottom: group.products.length > 1 ? '1px solid #eee' : 'none',
-                      }}
-                    >
-                      <div style={s.name}>{p.name}</div>
-                      <div style={s.price}>{p.price} XLM / {p.unit}</div>
-                      <div style={s.farmer}>🌾 {p.farmer_name}</div>
-                      {p.farmer_farm_address && <div style={s.address}>📍 {p.farmer_farm_address}</div>}
-                      <button style={s.btn} onClick={() => navigate(`/products/${p.id}`)}>View &amp; Buy</button>
-                    </div>
-                  ))}
-                </div>
-              </Popup>
-            </Marker>
-            {group.products.some(p => p.delivery_radius && p.origin_lat != null && p.origin_lng != null) && (
-              group.products.map(p => {
-                if (!p.delivery_radius || p.origin_lat == null || p.origin_lng == null) return null;
-                // Convert delivery_radius from meters to km if needed
-                const radiusKm = p.delivery_radius > 1000 ? p.delivery_radius / 1000 : p.delivery_radius;
-                return (
-                  <Circle
-                    key={`geo-${p.id}`}
-                    center={[p.origin_lat, p.origin_lng]}
-                    radius={radiusKm * 1000}
-                    pathOptions={{ color: '#2d6a4f', weight: 2, opacity: 0.5, fillColor: '#d8f3dc', fillOpacity: 0.1 }}
-                  />
-                );
-              })
-            )}
-          </React.Fragment>
-                      <button style={s.btn} onClick={() => navigate(`/product/${p.id}`)}>View &amp; Buy</button>
-                    </div>
-                  ))
-                ) : (
-                  <div>
-                    <div style={s.name}>{group.farmerName || 'Farm location'}</div>
-                    <div style={s.farmer}>🌾 {group.farmerName || 'Farmer'}</div>
-                  </div>
-                )}
-              </div>
-            </Popup>
-          </Marker>
-        ))}
+        <ClusterLayer groups={groups} onFarmerClick={onFarmerClick} />
       </MapContainer>
     </div>
   );

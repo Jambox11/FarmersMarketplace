@@ -632,7 +632,14 @@ router.patch('/:id/status', auth, validate.updateOrderStatus, async (req, res) =
   const order = rows[0];
   if (!order) return err(res, 404, 'Order not found or not yours', 'not_found');
 
-  await db.query('UPDATE orders SET status = $1 WHERE id = $2', [status, order.id]);
+  if (status === 'delivered') {
+    await db.query(
+      'UPDATE orders SET status = $1, delivered_at = $2 WHERE id = $3',
+      [status, new Date().toISOString(), order.id]
+    );
+  } else {
+    await db.query('UPDATE orders SET status = $1 WHERE id = $2', [status, order.id]);
+  }
 
   if (status === 'completed' && order.buyer_stellar_address) {
     const rewardAmount = parseInt(process.env.REWARD_TOKENS_PER_ORDER || '100', 10);
