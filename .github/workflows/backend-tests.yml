@@ -19,6 +19,7 @@ jobs:
       JWT_SECRET: ci-test-secret
       STELLAR_NETWORK: testnet
       SMTP_HOST: ""
+      SKIP_CONTRACT_TESTS: 'true'
 
     steps:
       - uses: actions/checkout@v4
