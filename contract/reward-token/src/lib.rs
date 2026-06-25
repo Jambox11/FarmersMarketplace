@@ -34,6 +34,10 @@ pub enum DataKey {
     VestingPeriod,
     /// Maximum mintable supply cap (#696). Set once at initialize; 0 = uncapped.
     MaxSupply,
+    /// Burn-on-transfer fee in basis points (#685).
+    TransferFeeBps,
+    /// Reward tokens minted per 10,000 XLM spent (#846). Admin-configurable.
+    RewardRateBps,
     /// Minter address authorized to mint tokens (#849).
     Minter,
 }
@@ -82,6 +86,7 @@ impl RewardToken {
         env.storage().instance().set(&DataKey::TotalSupply, &0_i128);
         env.storage().instance().set(&DataKey::TransferFeeBps, &0_u32);
         env.storage().instance().set(&DataKey::MaxSupply, &max_supply);
+        env.storage().instance().set(&DataKey::RewardRateBps, &0_u32);
         env.storage().instance().set(
             &DataKey::Metadata,
             &TokenMetadata { decimal, name, symbol },
@@ -107,6 +112,50 @@ impl RewardToken {
     /// Returns the current transfer fee in basis points (#685).
     pub fn transfer_fee_bps(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::TransferFeeBps).unwrap_or(0)
+    }
+
+    /// Sets reward_rate_bps: tokens minted per 10,000 XLM spent (#846). Admin-only.
+    pub fn set_reward_rate(env: Env, new_rate: u32) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::RewardRateBps, &new_rate);
+        env.events().publish(("set_reward_rate",), new_rate);
+    }
+
+    /// Returns the current reward rate in basis points (#846).
+    pub fn reward_rate_bps(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::RewardRateBps).unwrap_or(0)
+    }
+
+    /// Mint reward tokens proportional to `xlm_amount` using reward_rate_bps (#846).
+    /// tokens = xlm_amount * reward_rate_bps / 10000
+    /// Returns MaxSupplyExceeded error code (via panic) if minting would exceed the cap.
+    /// Admin must authorize this call.
+    pub fn mint_for_order(env: Env, to: Address, xlm_amount: i128) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        if xlm_amount <= 0 {
+            panic!("xlm_amount must be positive");
+        }
+        let rate: u32 = env.storage().instance().get(&DataKey::RewardRateBps).unwrap_or(0);
+        if rate == 0 {
+            return; // reward rate not configured, no-op
+        }
+        let amount = xlm_amount * rate as i128 / 10_000;
+        if amount <= 0 {
+            return;
+        }
+
+        let supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        let max_supply: i128 = env.storage().instance().get(&DataKey::MaxSupply).unwrap_or(0);
+        if max_supply > 0 && supply + amount > max_supply {
+            panic!("MaxSupplyExceeded");
+        }
+
+        let balance = Self::balance(env.clone(), to.clone());
+        env.storage().persistent().set(&DataKey::Balance(to.clone()), &(balance + amount));
+        env.storage().instance().set(&DataKey::TotalSupply, &(supply + amount));
+        env.events().publish(("mint", to.clone()), amount);
     }
 
     pub fn mint(env: Env, to: Address, amount: i128) {
@@ -203,6 +252,49 @@ impl RewardToken {
         let supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
         env.storage().instance().set(&DataKey::TotalSupply, &(supply - amount));
         env.events().publish(("burn", from), amount);
+    }
+
+    /// Admin-callable burn for reward reclamation on refund/dispute (#847).
+    /// Burns up to `amount` from `from`; if balance < amount the burn is capped
+    /// at the available balance (safe, never panics on insufficient balance).
+    /// Emits ("reward", "burn", from, actual_amount).
+    pub fn burn_reward(env: Env, from: Address, amount: i128) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        let balance = Self::balance(env.clone(), from.clone());
+        if balance == 0 {
+            return;
+        }
+        let actual = if amount > balance { balance } else { amount };
+        env.storage().persistent().set(&DataKey::Balance(from.clone()), &(balance - actual));
+        let supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        env.storage().instance().set(&DataKey::TotalSupply, &(supply - actual));
+        env.events().publish(("reward", "burn", from), actual);
+    }
+
+    /// Admin-callable burn for reward reclamation on refund/dispute (#847).
+    /// Burns up to `amount` tokens from `from`; if balance < amount the burn is
+    /// capped at the available balance (safe, non-panicking).
+    /// Emits ("reward", "burn", from, actual_amount).
+    pub fn burn_reward(env: Env, from: Address, amount: i128) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        let balance = Self::balance(env.clone(), from.clone());
+        if balance == 0 {
+            return; // nothing to burn
+        }
+        // Cap at available balance (#847 acceptance criterion)
+        let actual = if amount > balance { balance } else { amount };
+        env.storage().persistent().set(&DataKey::Balance(from.clone()), &(balance - actual));
+        let supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        env.storage().instance().set(&DataKey::TotalSupply, &(supply - actual));
+        env.events().publish(("reward", "burn", from), actual);
     }
 
     /// Burn tokens on behalf of a holder using spender allowance (#483).
@@ -788,6 +880,71 @@ mod test {
         assert_eq!(client2.balance(&user), 250);
     }
 
+    // ── #846 — reward_rate_bps and mint_for_order ─────────────────────────────
+
+    #[test]
+    fn test_reward_rate_bps_defaults_to_zero() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        assert_eq!(client.reward_rate_bps(), 0);
+    }
+
+    #[test]
+    fn test_set_reward_rate_by_admin() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        env.mock_all_auths();
+        client.set_reward_rate(&500); // 5%
+        assert_eq!(client.reward_rate_bps(), 500);
+    }
+
+    #[test]
+    fn test_mint_for_order_rate_calculation() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        let user = Address::generate(&env);
+        env.mock_all_auths();
+        client.set_reward_rate(&100); // 1% = 100 bps
+        // 10,000 XLM * 100 bps / 10,000 = 100 tokens
+        client.mint_for_order(&user, &10_000);
+        assert_eq!(client.balance(&user), 100);
+        assert_eq!(client.total_supply(), 100);
+    }
+
+    #[test]
+    fn test_mint_for_order_zero_rate_is_noop() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        let user = Address::generate(&env);
+        env.mock_all_auths();
+        // rate = 0 (default) → no tokens minted
+        client.mint_for_order(&user, &10_000);
+        assert_eq!(client.balance(&user), 0);
+        assert_eq!(client.total_supply(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "MaxSupplyExceeded")]
+    fn test_mint_for_order_exceeds_max_supply_panics() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, RewardToken);
+        let client = RewardTokenClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        // cap = 50 tokens
+        client.initialize(&admin, &7, &String::from_str(&env, "FRT"), &String::from_str(&env, "FRT"), &50);
+        env.mock_all_auths();
+        client.set_reward_rate(&10_000); // 100% rate → 1 XLM = 1 token
+        client.mint_for_order(&user, &100); // would mint 100 tokens, cap is 50
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_reward_rate_requires_admin() {
+        let env = Env::default();
+        let (client, _admin) = setup_token(&env);
+        // No mock_all_auths — auth will fail for non-admin
+        client.set_reward_rate(&100);
     // ── #849 minter role tests ─────────────────────────────────────────────────
 
     #[test]

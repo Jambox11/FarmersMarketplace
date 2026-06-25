@@ -522,8 +522,12 @@ router.post('/', auth, orderRateLimit, validate.order, async (req, res) => {
 
     const rewardAmount = Math.floor(totalPrice);
     if (rewardAmount > 0 && buyer.stellar_public_key) {
-      mintRewardTokens(buyer.stellar_public_key, rewardAmount)
-        .catch((e) => logger.error('[Rewards] Failed to mint tokens:', { error: e.message }));
+      try {
+        mintRewardTokens(buyer.stellar_public_key, rewardAmount)
+          .catch((e) => logger.warn('[Rewards] Mint failed (non-fatal):', { error: e.message }));
+      } catch (e) {
+        logger.warn('[Rewards] Mint failed (non-fatal):', { error: e.message });
+      }
     }
 
     const feeInfo = getPlatformFeeInfo(totalPrice);
@@ -675,8 +679,12 @@ router.patch('/:id/status', auth, validate.updateOrderStatus, async (req, res) =
   if (status === 'completed' && order.buyer_stellar_address) {
     const rewardAmount = parseInt(process.env.REWARD_TOKENS_PER_ORDER || '100', 10);
     if (rewardAmount > 0) {
-      mintRewardTokens(order.buyer_stellar_address, rewardAmount)
-        .catch((e) => logger.error(`Failed to mint reward tokens for order ${order.id}:`, { error: e.message }));
+      try {
+        mintRewardTokens(order.buyer_stellar_address, rewardAmount)
+          .catch((e) => logger.warn(`[Rewards] Mint failed for order ${order.id} (non-fatal):`, { error: e.message }));
+      } catch (e) {
+        logger.warn(`[Rewards] Mint failed for order ${order.id} (non-fatal):`, { error: e.message });
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 #![no_std]
 
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, symbol_short, token, Address, BytesN, Env, Vec};
 use soroban_sdk::{contract, contractimpl, contracttype, contracterror, token, Address, Bytes, BytesN, Env, Vec};
 
 // TTL thresholds for persistent escrow entries (~57–115 days at 5 s/ledger).
@@ -157,6 +158,13 @@ impl EscrowContract {
         env.storage().persistent().set(&DataKey::Token(order_id), &token);
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+
+        // #844 — deposit event: ("escrow", "deposit") → (order_id, buyer, farmer, amount, timeout_unix)
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("deposit")),
+            (order_id, escrow.buyer.clone(), escrow.farmer.clone(), amount, timeout_unix),
+        );
+
         env.events().publish(("escrow", "deposit", order_id), amount);
         Ok(())
     }
@@ -263,6 +271,12 @@ impl EscrowContract {
         escrow.status = EscrowStatus::Released;
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+
+        // #844 — release event: ("escrow", "release") → (order_id, farmer_amount, fee_amount)
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("release")),
+            (order_id, farmer_amount, fee_amount),
+        );
         env.events().publish(("escrow", "release", order_id), farmer_amount);
 
         // #851 — Mint reward tokens for the buyer using try_call (non-blocking)
@@ -336,6 +350,13 @@ impl EscrowContract {
         escrow.status = EscrowStatus::Refunded;
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+
+        // #844 — refund event: ("escrow", "refund") → (order_id, refunded_amount)
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("refund")),
+            (order_id, escrow.amount),
+        );
+
         env.events().publish(("escrow", "refund", order_id), escrow.amount);
         Ok(())
     }
@@ -370,6 +391,13 @@ impl EscrowContract {
         escrow.status = EscrowStatus::Disputed;
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+
+        // #844 — dispute opened event: ("escrow", "dispute") → order_id
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("dispute")),
+            order_id,
+        );
+
         Ok(())
     }
 
@@ -415,6 +443,14 @@ impl EscrowContract {
         }
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+
+        // #844 — resolved event: ("escrow", "resolved") → (order_id, buyer_pct)
+        // buyer_pct = 100 if refunded to buyer, 0 if released to farmer
+        let buyer_pct: u32 = if release_to_farmer { 0 } else { 100 };
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("resolved")),
+            (order_id, buyer_pct),
+        );
     }
 
     /// Admin proposes a new admin (first step of two-step transfer).
