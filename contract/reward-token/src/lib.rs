@@ -292,33 +292,24 @@ impl RewardToken {
             panic!("insufficient balance");
         }
 
-        // #693 — enforce vesting: caller must not transfer locked tokens.
-        // We compute the locked amount by scanning all Vesting entries for `from`.
-        // Because Soroban storage does not support iteration, callers must pass
-        // `vesting_hint_ledgers` via a separate call to `vested_balance` before
-        // calling transfer.  Here we re-check using the same approach: if the
-        // caller has any locked tokens we compare against the vested amount.
-        // NOTE: transfer does NOT take mint_ledgers as a parameter to keep the
-        // existing interface stable.  The lock is enforced conservatively: if
-        // the total balance minus the requested amount would go below zero we
-        // already panic above.  For a stricter check callers should use
-        // `vested_balance` to verify before calling `transfer`.
-        //
-        // The strict per-entry check is done in `transfer_locked` (see below).
-        // For the standard `transfer` we enforce that the sender's vested
-        // (unlocked) balance covers the requested amount.  Because we cannot
-        // iterate storage we rely on the caller having called `vested_balance`
-        // first; the contract itself cannot enforce this without the hint list.
-        // This is the standard pattern for vesting in Soroban contracts.
-
-        let to_balance = Self::balance(env.clone(), to.clone());
+        let fee_bps: u32 = env.storage().instance().get(&DataKey::TransferFeeBps).unwrap_or(0);
+        let burn_amount: i128 = if fee_bps > 0 { amount * fee_bps as i128 / 10_000 } else { 0 };
+        let net_amount = amount - burn_amount;
 
         env.storage()
             .persistent()
             .set(&DataKey::Balance(from.clone()), &(from_balance - amount));
+
+        let to_balance = Self::balance(env.clone(), to.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Balance(to.clone()), &(to_balance + amount));
+            .set(&DataKey::Balance(to.clone()), &(to_balance + net_amount));
+
+        if burn_amount > 0 {
+            let supply: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+            env.storage().instance().set(&DataKey::TotalSupply, &(supply - burn_amount));
+            env.events().publish(("transfer_burn", from.clone()), burn_amount);
+        }
 
         env.events().publish(("transfer", from.clone(), to.clone()), amount);
     }

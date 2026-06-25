@@ -147,6 +147,7 @@ impl EscrowContract {
         let escrow = Escrow {
             buyer,
             farmer,
+            // Clone token before moving it into the struct so we can persist it separately.
             token: token.clone(),
             amount,
             timeout_unix,
@@ -156,6 +157,7 @@ impl EscrowContract {
         env.storage().persistent().set(&DataKey::Token(order_id), &token);
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+        env.events().publish(("escrow", "deposit", order_id), amount);
         Ok(())
     }
 
@@ -232,6 +234,7 @@ impl EscrowContract {
             EscrowStatus::Active => {}
         }
 
+        // Verify the token stored at deposit time matches the escrow record.
         let stored_token: Address = env
             .storage()
             .persistent()
@@ -260,6 +263,7 @@ impl EscrowContract {
         escrow.status = EscrowStatus::Released;
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+        env.events().publish(("escrow", "release", order_id), farmer_amount);
 
         // #851 — Mint reward tokens for the buyer using try_call (non-blocking)
         // Calculate reward amount as 1% of the released amount (100 basis points)
@@ -316,6 +320,7 @@ impl EscrowContract {
             return Err(EscrowError::TimeoutNotReached);
         }
 
+        // Verify the token stored at deposit time matches the escrow record.
         let stored_token: Address = env
             .storage()
             .persistent()
@@ -331,9 +336,12 @@ impl EscrowContract {
         escrow.status = EscrowStatus::Refunded;
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
+        env.events().publish(("escrow", "refund", order_id), escrow.amount);
         Ok(())
     }
 
+    /// Permissionless claim for timeout refunds. Mirrors `refund`.
+    pub fn claim_timeout_refund(env: Env, order_id: u64) -> Result<(), EscrowError> {
     /// Permissionless claim for timeout refunds. Mirrors `refund` but present
     /// with the explicit name `claim_timeout_refund` used in the spec/docs.
     pub fn claim_timeout_refund(env: Env, _xlm_token: Address, order_id: u64) -> Result<(), EscrowError> {
@@ -366,6 +374,7 @@ impl EscrowContract {
     }
 
     /// Admin resolves a disputed escrow. Uses the token stored in the record (#683).
+    pub fn resolve_dispute(env: Env, order_id: u64, release_to_farmer: bool) {
     pub fn resolve_dispute(env: Env, xlm_token: Address, order_id: u64, release_to_farmer: bool) {
         let admin_transfer: AdminTransfer = env
             .storage()
@@ -384,22 +393,25 @@ impl EscrowContract {
             panic!("escrow is not in dispute");
         }
 
+        // Verify the token stored at deposit time matches the escrow record.
         let stored_token: Address = env
             .storage()
             .persistent()
             .get(&DataKey::Token(order_id))
             .expect("token not set for escrow");
-        if stored_token != xlm_token {
-            panic!("provided token does not match stored escrow token");
+        if stored_token != escrow.token {
+            panic!("stored token does not match escrow token");
         }
 
-        let token_client = token::Client::new(&env, &xlm_token);
+        let token_client = token::Client::new(&env, &escrow.token);
         if release_to_farmer {
             token_client.transfer(&env.current_contract_address(), &escrow.farmer, &escrow.amount);
             escrow.status = EscrowStatus::Released;
+            env.events().publish(("escrow", "resolve_dispute", order_id), true);
         } else {
             token_client.transfer(&env.current_contract_address(), &escrow.buyer, &escrow.amount);
             escrow.status = EscrowStatus::Refunded;
+            env.events().publish(("escrow", "resolve_dispute", order_id), false);
         }
         env.storage().persistent().set(&DataKey::Escrow(order_id), &escrow);
         env.storage().persistent().extend_ttl(&DataKey::Escrow(order_id), TTL_MIN, TTL_MAX);
