@@ -112,6 +112,10 @@ jest.mock('../src/utils/mailer', () => ({
   sendLowStockAlert: jest.fn().mockResolvedValue({}),
   sendStatusUpdateEmail: jest.fn().mockResolvedValue({}),
   sendBackInStockEmail: jest.fn().mockResolvedValue({}),
+  sendAuctionWinnerEmail: jest.fn().mockResolvedValue({}),
+  sendAuctionSaleEmail: jest.fn().mockResolvedValue({}),
+  sendAuctionNoSaleEmail: jest.fn().mockResolvedValue({}),
+  sendSubscriptionPaymentFailedEmail: jest.fn().mockResolvedValue({}),
 }));
 
 // --- requestLogger mock (uuid v13 is ESM-only, incompatible with Jest CJS) ---
@@ -139,6 +143,19 @@ beforeEach(() => {
   );
 
   const stellar = jest.requireMock('../src/utils/stellar');
+  if (stellar.createWallet) stellar.createWallet.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET' });
+  if (stellar.createWalletFromMnemonic) stellar.createWalletFromMnemonic.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET', mnemonic: 'word '.repeat(12).trim() });
+  if (stellar.deriveKeypairFromMnemonic) stellar.deriveKeypairFromMnemonic.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET' });
+  if (stellar.getBalance) stellar.getBalance.mockResolvedValue(1000);
+  if (stellar.getTransactions) stellar.getTransactions.mockResolvedValue({ records: [], next_cursor: null, prev_cursor: null });
+  if (stellar.fundTestnetAccount) stellar.fundTestnetAccount.mockResolvedValue({});
+  if (stellar.sendPayment) stellar.sendPayment.mockResolvedValue('TXHASH123');
+  stellar.isTestnet = true;
+  if (stellar.createClaimableBalance) stellar.createClaimableBalance.mockResolvedValue({
+    txHash: 'ESCROW_TX',
+    balanceId: 'BALANCE_ID_001',
+  });
+  if (stellar.claimBalance) stellar.claimBalance.mockResolvedValue('CLAIM_TX_001');
   stellar.createWallet?.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET' });
   stellar.createWalletFromMnemonic?.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET', mnemonic: 'word '.repeat(12).trim() });
   stellar.deriveKeypairFromMnemonic?.mockReturnValue({ publicKey: 'GPUBKEY', secretKey: 'SSECRET' });
@@ -156,6 +173,14 @@ beforeEach(() => {
   stellar.getContractWasmHash = jest.fn().mockResolvedValue('0'.repeat(64));
 
   const mailer = jest.requireMock('../src/utils/mailer');
+  if (mailer.sendOrderEmails) mailer.sendOrderEmails.mockResolvedValue({});
+  if (mailer.sendLowStockAlert) mailer.sendLowStockAlert.mockResolvedValue({});
+  if (mailer.sendStatusUpdateEmail) mailer.sendStatusUpdateEmail.mockResolvedValue({});
+  if (mailer.sendBackInStockEmail) mailer.sendBackInStockEmail.mockResolvedValue({});
+  if (mailer.sendAuctionWinnerEmail) mailer.sendAuctionWinnerEmail.mockResolvedValue({});
+  if (mailer.sendAuctionSaleEmail) mailer.sendAuctionSaleEmail.mockResolvedValue({});
+  if (mailer.sendAuctionNoSaleEmail) mailer.sendAuctionNoSaleEmail.mockResolvedValue({});
+  if (mailer.sendSubscriptionPaymentFailedEmail) mailer.sendSubscriptionPaymentFailedEmail.mockResolvedValue({});
   mailer.sendOrderEmails?.mockResolvedValue({});
   mailer.sendLowStockAlert?.mockResolvedValue({});
   mailer.sendStatusUpdateEmail?.mockResolvedValue({});

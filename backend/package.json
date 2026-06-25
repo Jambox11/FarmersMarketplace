@@ -42,7 +42,11 @@
       "!src/index.js"
     ],
     "coverageDirectory": "coverage",
-    "coverageReporters": ["text-summary", "lcov", "html"],
+    "coverageReporters": [
+      "text-summary",
+      "lcov",
+      "html"
+    ],
     "coverageThreshold": {
       "global": {
         "statements": 40,
