@@ -656,6 +656,16 @@ router.post('/:id/images', auth, async (req, res) => {
   });
 });
 
+// GET /api/products/:id
+router.get('/:id', (req, res) => {
+  const product = db.prepare(`
+    SELECT p.*, u.name as farmer_name, u.stellar_public_key as farmer_wallet,
+           COALESCE(p.avg_rating, 0) as avg_rating,
+           COALESCE(p.review_count, 0) as review_count
+    FROM products p JOIN users u ON p.farmer_id = u.id WHERE p.id = ?
+  `).get(req.params.id);
+  if (!product) return err(res, 404, 'Product not found', 'not_found');
+  res.json({ success: true, data: product });
 // DELETE /api/products/:id/images/:imgId
 router.delete('/:id/images/:imgId', auth, async (req, res) => {
   if (req.user.role !== 'farmer') return err(res, 403, 'Only farmers can delete images', 'forbidden');
