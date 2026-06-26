@@ -26,4 +26,9 @@ router.use('/api/v1/wallet',   require('./wallet'));
 
 router.get('/api/v1/health', (_, res) => res.json({ status: 'ok', version: 'v1' }));
 
+router.use('/api/coupons',    require('./coupons'));
+router.use('/api/export',     require('./export'));
+router.use('/api/categories', require('./categories'));
+router.use('/api/reviews',    require('./reviews'));
+
 module.exports = router;
