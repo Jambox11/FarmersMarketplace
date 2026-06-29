@@ -370,7 +370,7 @@ registerRoute('/', '', require('./reviews'));
 registerRoute('/', '/network', require('./network'));
 registerRoute('/', '/batches', require('./batches'));
 registerRoute('/', '/products/flashSales', require('./flashSales'));
-registerRoute('/', '/products/videos', require('./productVideos'));
+registerRoute('/', '/products', require('./productVideos'));
 registerRoute('/', '/products/:id/calendar', require('./calendar'));
 registerRoute('/', '/calendar', require('./calendar'));
 registerRoute('/', '/wallet', require('./walletBudget'));
