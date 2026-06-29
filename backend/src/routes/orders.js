@@ -539,6 +539,9 @@ router.post('/', auth, orderRateLimit, validate.order, async (req, res) => {
         userId: req.user.id,
         cooperativeAddress,
         cooperativeRoyaltyBps,
+        releaseAfterUnix: product.is_preorder && product.preorder_delivery_date
+          ? parsePreorderUnlockUnix(product.preorder_delivery_date) || 0
+          : 0,
       });
       txHash = result.txHash;
       balanceId = `soroban:${orderId}`;
