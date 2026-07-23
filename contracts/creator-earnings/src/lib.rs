@@ -143,6 +143,15 @@ impl CreatorEarningsContract {
             .get(&DataKey::Balance(creator))
             .unwrap_or(0)
     }
+
+    /// Read-only: return the currently-configured platform fee recipient address.
+    /// Returns NotInitialised if the contract has not been initialized yet.
+    pub fn platform(env: Env) -> Result<Address, EarningsError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Platform)
+            .ok_or(EarningsError::NotInitialised)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -444,5 +453,25 @@ mod test {
         // This should succeed because platform1 is authenticated.
         let result = CreatorEarningsContract::init(env.clone(), platform2.clone());
         assert!(result.is_ok());
+    }
+
+    // ── #962: platform() getter ──────────────────────────────────────────────
+
+    /// #962: platform() returns the configured address after init().
+    #[test]
+    fn platform_getter_returns_configured_address() {
+        let (env, platform, _) = setup();
+        assert_eq!(CreatorEarningsContract::platform(env).unwrap(), platform);
+    }
+
+    /// #962: platform() returns NotInitialised before init().
+    #[test]
+    fn platform_getter_returns_not_initialised_before_init() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.register_contract(None, CreatorEarningsContract);
+
+        let result = CreatorEarningsContract::platform(env);
+        assert_eq!(result, Err(EarningsError::NotInitialised));
     }
 }
