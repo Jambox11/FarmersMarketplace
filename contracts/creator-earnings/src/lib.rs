@@ -22,6 +22,18 @@
 //! Topic: `("creator_earnings", "claim")`
 //! Data: `(creator: Address, amount_claimed: i128)`
 //! Emitted whenever a creator claims their balance.
+//!
+//! ### upgrade
+//! Topic: `("creator_earnings", "upgrade")`
+//! Data: `()`
+//! Emitted whenever the contract is upgraded.
+//!
+//! ## Upgrade
+//!
+//! The contract supports in-place upgrades via the `upgrade()` function, which is
+//! gated by platform authentication. This allows fixing bugs and security issues
+//! without requiring creators to migrate to a new contract address, preserving
+//! balance history and integrity.
 
 #![no_std]
 
@@ -177,6 +189,27 @@ impl CreatorEarningsContract {
             .instance()
             .get(&DataKey::Platform)
             .ok_or(EarningsError::NotInitialised)
+    }
+
+    /// Admin-gated contract upgrade.
+    /// Only the current platform address can upgrade the contract.
+    /// `new_wasm_hash` must not be all zeros.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), EarningsError> {
+        let platform: Address = env.storage()
+            .instance()
+            .get(&DataKey::Platform)
+            .ok_or(EarningsError::NotInitialised)?;
+
+        platform.require_auth();
+
+        let zero = BytesN::<32>::from_array(&env, &[0u8; 32]);
+        if new_wasm_hash == zero {
+            return Err(EarningsError::InvalidWasmHash);
+        }
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.events().publish(("creator_earnings", "upgrade"), ());
+        Ok(())
     }
 }
 
@@ -538,5 +571,41 @@ mod test {
         let result = CreatorEarningsContract::claim(env.clone(), creator.clone(), token);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1_000);
+    }
+
+    // ── #964: upgrade() function ────────────────────────────────────────────
+
+    /// #964: upgrade() requires platform auth.
+    #[test]
+    fn upgrade_requires_platform_auth() {
+        let (env, _platform, _) = setup();
+        let fake_hash = BytesN::<32>::from_array(&env, &[1u8; 32]);
+
+        // With mock_all_auths, this should succeed.
+        let result = CreatorEarningsContract::upgrade(env.clone(), fake_hash.clone());
+        assert!(result.is_ok());
+    }
+
+    /// #964: upgrade() rejects zero hash.
+    #[test]
+    fn upgrade_rejects_zero_hash() {
+        let (env, _platform, _) = setup();
+        let zero_hash = BytesN::<32>::from_array(&env, &[0u8; 32]);
+
+        let result = CreatorEarningsContract::upgrade(env, zero_hash);
+        assert_eq!(result, Err(EarningsError::InvalidWasmHash));
+    }
+
+    /// #964: upgrade() fails if contract not initialized.
+    #[test]
+    fn upgrade_fails_if_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.register_contract(None, CreatorEarningsContract);
+
+        let fake_hash = BytesN::<32>::from_array(&env, &[1u8; 32]);
+
+        let result = CreatorEarningsContract::upgrade(env, fake_hash);
+        assert_eq!(result, Err(EarningsError::NotInitialised));
     }
 }
